@@ -42,12 +42,14 @@ function formatOwnerMessage(b) {
     ];
   } else {
     lines = [
-      'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
+      b.offMenu
+        ? 'NEW BOOKING REQUEST — OFF-MENU / CUSTOM (confirm service & price):'
+        : 'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
       who,
-      `${b.service} with ${b.stylist}`,
+      b.stylist ? `${b.service} with ${b.stylist}` : b.service,
       b.when,
       b.note ? `Note: ${b.note}` : null,
-      'Please enter it in Salon Scheduler to confirm (deposit may apply).',
+      'Please enter it in Salon Scheduler to confirm.',
     ];
   }
   return lines.filter(Boolean).join('\n');

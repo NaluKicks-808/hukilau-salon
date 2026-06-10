@@ -134,11 +134,39 @@ async function bookAppointment(args = {}) {
   // Re-check availability right now (light double-book guard), across all stylists.
   const r = await getAvailability({ date: args.date, service: args.service, stylist: '' });
   if (!r.ok) {
-    let message = r.message;
-    if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
-      message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+    // Off-menu / custom service: don't turn callers away. Capture the request with a note and
+    // let the salon confirm service, price, and time. (The date was already validated above.)
+    if (r.error === 'unknown_service') {
+      const reqStylist = resolveStylist(args.stylist);
+      const when = describeWhen(args.date, args.time);
+      const booking = {
+        action: 'book',
+        status: 'pending_owner_confirmation',
+        offMenu: true,
+        customer: {
+          firstName: String(args.firstName).trim(),
+          lastName: String(args.lastName).trim(),
+          phone: String(args.phone).trim(),
+          email: args.email ? String(args.email).trim() : null,
+        },
+        service: String(args.service).trim(),
+        stylist: reqStylist ? reqStylist.full : args.stylist ? String(args.stylist).trim() : null,
+        date: when.iso,
+        when: when.text,
+        note: [args.note ? String(args.note).trim() : null, 'OFF-MENU / custom service — please confirm service, price, and time with the customer.']
+          .filter(Boolean)
+          .join(' | '),
+        source: 'vapi-ai-receptionist',
+        capturedAt: new Date().toISOString(),
+      };
+      const delivery = await notifyOwner(booking);
+      return {
+        ok: true,
+        message: `Okay — I've sent your request for ${booking.service} on ${when.text} to the salon, and they'll confirm with you shortly.`,
+        data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
+      };
     }
-    return { ok: false, error: r.error, message, data: r };
+    return { ok: false, error: r.error, message: r.message, data: r };
   }
 
   const wantMin = parseClock(args.time);
@@ -199,12 +227,11 @@ async function bookAppointment(args = {}) {
 
   const delivery = await notifyOwner(booking);
 
-  const depositLine = depositRequired ? ' A deposit may be required to finalize.' : '';
   return {
     ok: true,
     message:
       `Got it — I've put in a request for a ${booking.service} with ${booking.stylist} on ${booking.when}. ` +
-      `The salon will confirm with you shortly.${depositLine}`,
+      `The salon will confirm with you shortly.`,
     data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
   };
 }

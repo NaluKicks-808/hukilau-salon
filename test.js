@@ -155,6 +155,16 @@ async function runLive() {
     service, stylist: r.data.earliest.stylist, date: found.iso, time: '3:07 AM',
   });
   ok(!badSlot.ok && badSlot.error === 'slot_unavailable', 'unavailable time is rejected with alternatives');
+  ok(!/deposit/i.test(booking.message), 'booking confirmation does not mention a deposit');
+
+  // off-menu / custom service is captured, not rejected
+  const offMenu = await tools.bookAppointment({
+    firstName: 'Test', lastName: 'Caller', phone: '808-555-0000',
+    service: 'hot stone massage', stylist: '', date: found.iso, time: '10:00 AM',
+  });
+  ok(offMenu.ok, 'off-menu service is captured, not rejected');
+  ok(offMenu.data.booking.offMenu === true, 'off-menu booking is flagged');
+  ok(/OFF-MENU/i.test(offMenu.data.ownerMessage), 'owner message flags off-menu / custom');
 
   section('LIVE: cancel & reschedule are CAPTURE-ONLY too');
   {
