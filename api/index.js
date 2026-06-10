@@ -12,7 +12,8 @@
  */
 
 // Pin to salon-local time (no `npm start` wrapper exists in serverless).
-process.env.TZ = process.env.TZ || process.env.SALON_TZ || 'Pacific/Honolulu';
+// Set unconditionally: Vercel pre-sets TZ=":UTC", so a `||` fallback would never apply.
+process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const { app } = require('../server');
 

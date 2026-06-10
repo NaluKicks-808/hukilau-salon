@@ -22,8 +22,8 @@
  *   GET  /health
  */
 
-// Pin to salon-local time before anything parses dates.
-process.env.TZ = process.env.TZ || process.env.SALON_TZ || 'Pacific/Honolulu';
+// Pin to salon-local time before anything parses dates (override any host-set TZ).
+process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const express = require('express');
 const { checkAvailability, bookAppointment } = require('./hukilau-booking');

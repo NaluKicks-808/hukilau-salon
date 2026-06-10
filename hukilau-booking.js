@@ -16,7 +16,7 @@
  */
 
 // Pin the process to salon-local time so chrono date parsing and native Date are HST.
-process.env.TZ = process.env.TZ || process.env.SALON_TZ || 'Pacific/Honolulu';
+process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const moment = require('moment-timezone');
 const { getAvailability } = require('./src/availabilityEngine');
