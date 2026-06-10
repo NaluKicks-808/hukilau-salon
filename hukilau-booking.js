@@ -43,6 +43,25 @@ function prettyDate(iso) {
   return moment(iso, 'YYYY-MM-DD').format('MMMM D');
 }
 
+// Build a "that time isn't open" message whose alternatives never contradict the request:
+// show the REQUESTED stylist's own next times, or explicitly name a DIFFERENT stylist's times.
+function slotUnavailableMessage(r, requested, requestedTime, whenLabel) {
+  let alt = '';
+  if (requested) {
+    const mine = r.stylists.find((s) => s.stylistIndex === requested.index);
+    if (mine && mine.slots.length) {
+      alt = ` ${requested.full}'s closest open times are ${speakSlots(mine.slots, 3)}.`;
+    } else {
+      const other = r.stylists[0];
+      if (other) alt = ` ${requested.full} isn't open that day, but ${other.stylistShort} has ${speakSlots(other.slots, 3)}.`;
+    }
+  } else {
+    const other = r.stylists[0];
+    if (other) alt = ` The closest open times are ${speakSlots(other.slots, 3)}.`;
+  }
+  return `Sorry, ${requestedTime} isn't available${requested ? ` with ${requested.full}` : ''} on ${whenLabel}.${alt}`;
+}
+
 // "9:15 am" / "9 am" / "2:30pm" / "14:30" -> minutes since midnight, or null.
 function parseClock(input) {
   if (input == null) return null;
@@ -183,12 +202,10 @@ async function bookAppointment(args = {}) {
 
   const when = `${r.weekday}, ${prettyDate(r.date)}`;
   if (!chosen) {
-    const fallback = pool[0] || r.stylists[0];
-    const alt = fallback ? ` The closest open times are ${speakSlots(fallback.slots, 3)}.` : '';
     return {
       ok: false,
       error: 'slot_unavailable',
-      message: `Sorry, ${args.time} isn't available${requested ? ` with ${requested.full}` : ''} on ${when}.${alt}`,
+      message: slotUnavailableMessage(r, requested, args.time, when),
       data: r,
     };
   }
@@ -330,12 +347,10 @@ async function rescheduleAppointment(args = {}) {
     }
     const whenLabel = `${r.weekday}, ${prettyDate(r.date)}`;
     if (!chosen) {
-      const fallback = pool[0] || r.stylists[0];
-      const alt = fallback ? ` The closest open times are ${speakSlots(fallback.slots, 3)}.` : '';
       return {
         ok: false,
         error: 'slot_unavailable',
-        message: `Sorry, ${args.newTime} isn't open${requested ? ` with ${requested.full}` : ''} on ${whenLabel}.${alt}`,
+        message: slotUnavailableMessage(r, requested, args.newTime, whenLabel),
         data: r,
       };
     }
