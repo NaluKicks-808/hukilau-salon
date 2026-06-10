@@ -53,7 +53,7 @@ function slotUnavailableMessage(r, requested, requestedTime, whenLabel) {
       alt = ` ${requested.full}'s closest open times are ${speakSlots(mine.slots, 3)}.`;
     } else {
       const other = r.stylists[0];
-      if (other) alt = ` ${requested.full} isn't open that day, but ${other.stylistShort} has ${speakSlots(other.slots, 3)}.`;
+      if (other) alt = ` ${requested.full} doesn't have any openings that day, but ${other.stylistShort} has ${speakSlots(other.slots, 3)}.`;
     }
   } else {
     const other = r.stylists[0];
