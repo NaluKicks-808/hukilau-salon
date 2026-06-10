@@ -14,6 +14,7 @@ const core = require('../vendor/availability-core');
 const { resolveDate, todayParts, maxBookingMs } = require('./datetime');
 const { resolveService } = require('./services');
 const { resolveStylist, displayName, shortName } = require('./stylists');
+const { getHolds } = require('./pendingHolds');
 
 async function loadAndConfigure() {
   const data = await getSalonData();
@@ -74,7 +75,8 @@ async function getAvailability(args) {
   });
 
   const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 8;
-  const { stylists, earliest } = shapeStylists(raw, cap);
+  const holds = await getHolds(d.iso);
+  const { stylists, earliest } = shapeStylists(raw, cap, holds);
 
   return {
     ok: true,
@@ -91,21 +93,36 @@ async function getAvailability(args) {
 }
 
 // Shape raw per-employee results into the sorted stylist list + the earliest slot.
-function shapeStylists(raw, cap = 8) {
+// `holds` (pending bookings not yet in the salon calendar) are subtracted so the next caller
+// can't see a slot the AI just booked. A candidate slot is dropped if the service's footprint
+// [start, start+duration) overlaps any hold for that stylist.
+function shapeStylists(raw, cap = 8, holds = []) {
   const stylists = raw
-    .map((r) => ({
-      stylist: displayName(r.employeeIndex),
-      stylistShort: shortName(r.employeeIndex),
-      stylistIndex: r.employeeIndex,
-      durationMinutes: r.durationMin,
-      slots: r.slots.slice(0, cap).map((s) => ({
-        time: s.label,
-        minutesIntoDay: s.minutesIntoDay,
-        iso: s.iso,
-      })),
-      totalOpenSlots: r.slots.length,
-      firstSlotMinutes: r.slots.length ? r.slots[0].minutesIntoDay : null,
-    }))
+    .map((r) => {
+      let open = r.slots;
+      const myHolds = (holds || []).filter((h) => h.stylistIndex === r.employeeIndex);
+      if (myHolds.length) {
+        const dur = r.durationMin || 0;
+        open = open.filter((slot) => {
+          const start = slot.minutesIntoDay;
+          const end = start + dur;
+          return !myHolds.some((h) => start < h.startMinutes + h.durationMinutes && h.startMinutes < end);
+        });
+      }
+      return {
+        stylist: displayName(r.employeeIndex),
+        stylistShort: shortName(r.employeeIndex),
+        stylistIndex: r.employeeIndex,
+        durationMinutes: r.durationMin,
+        slots: open.slice(0, cap).map((s) => ({
+          time: s.label,
+          minutesIntoDay: s.minutesIntoDay,
+          iso: s.iso,
+        })),
+        totalOpenSlots: open.length,
+        firstSlotMinutes: open.length ? open[0].minutesIntoDay : null,
+      };
+    })
     .filter((s) => s.slots.length > 0)
     .sort((a, b) => (a.firstSlotMinutes ?? 1e9) - (b.firstSlotMinutes ?? 1e9));
 
@@ -178,7 +195,8 @@ async function findEarliest(args) {
       employeeIndex,
       selectedServiceIndexes: [svc.match.index],
     });
-    const { stylists, earliest } = shapeStylists(raw, cap);
+    const holds = await getHolds(m.format('YYYY-MM-DD'));
+    const { stylists, earliest } = shapeStylists(raw, cap, holds);
     if (stylists.length) {
       return {
         ok: true,
@@ -208,4 +226,4 @@ async function findEarliest(args) {
   };
 }
 
-module.exports = { getAvailability, findEarliest, loadAndConfigure };
+module.exports = { getAvailability, findEarliest, loadAndConfigure, shapeStylists };

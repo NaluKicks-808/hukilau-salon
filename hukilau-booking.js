@@ -24,6 +24,7 @@ const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
 const { resolveDate } = require('./src/datetime');
+const { addHold } = require('./src/pendingHolds');
 
 // ---------- small speech/format helpers ----------
 
@@ -243,6 +244,14 @@ async function bookAppointment(args = {}) {
   };
 
   const delivery = await notifyOwner(booking);
+  // Hold this slot so the next caller can't be offered it before the owner enters it.
+  await addHold({
+    dateIso: r.date,
+    stylistIndex: chosen.stylist.stylistIndex,
+    startMinutes: chosen.slot.minutesIntoDay,
+    durationMinutes: chosen.stylist.durationMinutes,
+    meta: { name: `${booking.customer.firstName} ${booking.customer.lastName}`, service: booking.service },
+  }).catch(() => {});
 
   return {
     ok: true,
@@ -322,6 +331,7 @@ async function rescheduleAppointment(args = {}) {
   let serviceName = args.service ? String(args.service).trim() : null;
   let stylistName = requested ? requested.full : args.stylist ? String(args.stylist).trim() : null;
   let newWhen;
+  let newHold = null;
 
   // If we know the service, verify the NEW slot is actually open (same guard as booking).
   if (serviceName) {
@@ -357,6 +367,12 @@ async function rescheduleAppointment(args = {}) {
     serviceName = r.service.name;
     stylistName = chosen.stylist.stylist;
     newWhen = `${whenLabel} at ${chosen.slot.time} (HST)`;
+    newHold = {
+      dateIso: r.date,
+      stylistIndex: chosen.stylist.stylistIndex,
+      startMinutes: chosen.slot.minutesIntoDay,
+      durationMinutes: chosen.stylist.durationMinutes,
+    };
   } else {
     // No service stated — capture without the open-slot check; the owner validates.
     newWhen = describeWhen(args.newDate, args.newTime).text;
@@ -381,6 +397,13 @@ async function rescheduleAppointment(args = {}) {
   };
 
   const delivery = await notifyOwner(reschedule);
+  if (newHold) {
+    await addHold({
+      ...newHold,
+      meta: { name: `${reschedule.customer.firstName} ${reschedule.customer.lastName}`, action: 'reschedule' },
+    }).catch(() => {});
+  }
+
   return {
     ok: true,
     message: `Done — I've asked the salon to move your appointment to ${newWhen}. They'll confirm shortly.`,

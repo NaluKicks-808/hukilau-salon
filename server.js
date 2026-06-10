@@ -154,7 +154,14 @@ app.post('/vapi/events', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, tz: process.env.TZ, authEnabled: !!VAPI_SECRET }));
+app.get('/health', (req, res) =>
+  res.json({
+    ok: true,
+    tz: process.env.TZ,
+    authEnabled: !!VAPI_SECRET,
+    holdsStore: require('./src/pendingHolds').isConfigured(),
+  })
+);
 
 if (require.main === module) {
   app.listen(PORT, () => {

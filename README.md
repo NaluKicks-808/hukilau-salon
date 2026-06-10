@@ -242,3 +242,16 @@ The salon's real calendar changes outside our control (walk-ins, their website, 
 a long-lived cache would re-introduce double-booking — the one thing this prevents. And Vercel's
 serverless disk is ephemeral, so a CSV wouldn't persist. Short cache + prefetch + keep-warm gets
 the speed safely.
+
+### Pending-hold overlay (no double-booking across the confirmation gap)
+Because bookings are owner-confirmed, there's a window between "the AI captured a booking" and
+"the owner entered it in Salon Scheduler" where the salon calendar doesn't yet show it. To stop
+the next caller being offered the same slot, every booking/reschedule records a **hold** in
+Upstash Redis (`src/pendingHolds.js`), and `shapeStylists` subtracts holds from availability.
+- Holds only ADD blocks (never free a slot) → they can't hide real availability.
+- Each hold auto-expires after `HOLD_TTL_SECONDS` (~36h), by which point the salon's own
+  calendar blocks the slot and takes over. A slot briefly blocked by both is fine.
+- Credentials auto-detect from the Vercel/Upstash integration (any env prefix); if Redis isn't
+  configured it's a safe no-op. `GET /health` reports `holdsStore: true|false`.
+- Residual: a sub-second simultaneous double-book is still possible (check-then-act); the owner
+  is the final dedupe. A SETNX slot reservation could close that later if ever needed.

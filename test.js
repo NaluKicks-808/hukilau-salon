@@ -74,6 +74,28 @@ function runUnit() {
   ok(tools.parseClock('12:00 AM') === 0, '12:00 AM (midnight) -> 0');
   ok(tools.parseClock('14:30') === 870, '24h 14:30 -> 870');
   ok(tools.parseClock('garbage') === null, 'garbage -> null');
+
+  section('pending-holds overlay (unit)');
+  const { shapeStylists } = require('./src/availabilityEngine');
+  const fakeRaw = [
+    {
+      employeeIndex: 2,
+      durationMin: 60,
+      slots: [
+        { label: '9:00 AM', minutesIntoDay: 540, iso: 'a' },
+        { label: '10:00 AM', minutesIntoDay: 600, iso: 'b' },
+        { label: '11:00 AM', minutesIntoDay: 660, iso: 'c' },
+      ],
+    },
+  ];
+  ok(shapeStylists(fakeRaw, 8, []).stylists[0].slots.length === 3, 'no holds -> all slots remain');
+  const held = shapeStylists(fakeRaw, 8, [{ stylistIndex: 2, startMinutes: 540, durationMinutes: 60 }]);
+  ok(held.stylists[0].slots.every((s) => s.minutesIntoDay !== 540), 'held 9:00 slot is removed');
+  ok(held.stylists[0].slots.some((s) => s.minutesIntoDay === 600), 'adjacent 10:00 slot survives (no overlap)');
+  ok(
+    shapeStylists(fakeRaw, 8, [{ stylistIndex: 0, startMinutes: 540, durationMinutes: 60 }]).stylists[0].slots.length === 3,
+    "a hold for a different stylist doesn't affect this one"
+  );
 }
 
 // --------------------------------------------------------------------------- live (network)
