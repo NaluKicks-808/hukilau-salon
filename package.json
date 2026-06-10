@@ -1,0 +1,20 @@
+{
+  "name": "hukilau-receptionist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vapi receptionist tools for Hukilau Salon: live availability across the 4 stylists (lifted from the salon's own booking JS) + booking-request capture.",
+  "main": "hukilau-booking.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "TZ=Pacific/Honolulu node server.js",
+    "test": "TZ=Pacific/Honolulu node test.js",
+    "inspect": "TZ=Pacific/Honolulu node scripts/inspect.js"
+  },
+  "dependencies": {
+    "chrono-node": "^2.7.7",
+    "express": "^4.19.2",
+    "moment-timezone": "^0.5.45"
+  }
+}
