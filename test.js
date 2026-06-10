@@ -214,6 +214,24 @@ async function runLive() {
     }
     ok(networkCalls === 1, `3 lookups for the same day => 1 network call (got ${networkCalls})`);
   }
+
+  section('LIVE: find earliest availability (one fetch scans the whole window)');
+  {
+    const earliestAny = await tools.findEarliestAvailability({ service: "women's cut & style", stylist: '' });
+    ok(earliestAny.ok, 'find_earliest (any stylist) returns ok');
+    ok(/soonest|don't see/i.test(earliestAny.message), 'find_earliest gives a sensible answer');
+    console.log('   ' + earliestAny.message);
+
+    const earliestKelli = await tools.findEarliestAvailability({ service: "women's cut & style", stylist: 'Kelli' });
+    ok(earliestKelli.ok, 'find_earliest (specific stylist) returns ok');
+    console.log('   ' + earliestKelli.message);
+
+    const earliestBad = await tools.findEarliestAvailability({ service: 'unicorn grooming' });
+    ok(!earliestBad.ok && earliestBad.error === 'unknown_service', 'find_earliest rejects unknown service');
+
+    const missingSvc = await tools.findEarliestAvailability({});
+    ok(!missingSvc.ok && missingSvc.error === 'missing_fields', 'find_earliest requires a service');
+  }
 }
 
 (async () => {

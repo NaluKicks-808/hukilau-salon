@@ -19,7 +19,7 @@
 process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const moment = require('moment-timezone');
-const { getAvailability } = require('./src/availabilityEngine');
+const { getAvailability, findEarliest } = require('./src/availabilityEngine');
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
@@ -346,11 +346,56 @@ async function rescheduleAppointment(args = {}) {
   };
 }
 
+// ---------- Tool 5: find_earliest_availability ----------
+
+async function findEarliestAvailability(args = {}) {
+  if (!args.service || !String(args.service).trim()) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: 'Which service are you looking for?',
+      data: { missing: ['service'] },
+    };
+  }
+  const r = await findEarliest({
+    service: args.service,
+    stylist: args.stylist,
+    fromDate: args.fromDate,
+    daysToSearch: args.daysToSearch,
+  });
+  if (!r.ok) {
+    let message = r.message;
+    if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
+      message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+    }
+    return { ok: false, error: r.error, message, data: r };
+  }
+  if (!r.found) {
+    return { ok: true, message: r.message, data: r };
+  }
+
+  const when = `${r.weekday}, ${prettyDate(r.date)}`;
+  const e = r.earliest;
+  let message;
+  if (r.requestedStylist) {
+    message = `The soonest ${r.service.name} with ${e.stylist} is ${when} at ${e.time}.`;
+  } else {
+    message = `The soonest ${r.service.name} is ${when} at ${e.time} with ${e.stylistShort}.`;
+    const others = r.stylists
+      .filter((s) => s.stylistIndex !== e.stylistIndex)
+      .slice(0, 2)
+      .map((s) => `${s.stylistShort} at ${speakSlots(s.slots, 2)}`);
+    if (others.length) message += ` That same day, ${speakList(others)} also have openings.`;
+  }
+  return { ok: true, message, data: r };
+}
+
 // parseClock is exported for unit tests.
 module.exports = {
   checkAvailability,
   bookAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  findEarliestAvailability,
   parseClock,
 };

@@ -8,6 +8,7 @@
  * tool layer turns into a spoken reply.
  */
 
+const moment = require('moment-timezone');
 const { getSalonData, getBookedAppointments } = require('./salonClient');
 const core = require('../vendor/availability-core');
 const { resolveDate, todayParts, maxBookingMs } = require('./datetime');
@@ -73,6 +74,24 @@ async function getAvailability(args) {
   });
 
   const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 8;
+  const { stylists, earliest } = shapeStylists(raw, cap);
+
+  return {
+    ok: true,
+    date: d.iso,
+    weekday: d.weekday,
+    timezone: tz,
+    service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
+    requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
+    anyStylist: employeeIndex == null,
+    available: stylists.length > 0,
+    earliest,
+    stylists,
+  };
+}
+
+// Shape raw per-employee results into the sorted stylist list + the earliest slot.
+function shapeStylists(raw, cap = 8) {
   const stylists = raw
     .map((r) => ({
       stylist: displayName(r.employeeIndex),
@@ -101,19 +120,92 @@ async function getAvailability(args) {
       iso: top.slots[0].iso,
     };
   }
+  return { stylists, earliest };
+}
+
+/**
+ * Find the SOONEST day with an opening for a service (optionally a specific stylist), scanning
+ * forward from `fromDate` (default today). Fetches the whole window in ONE getappt.php call and
+ * computes each day in memory — far better than the assistant looping check_availability per day.
+ *
+ * @param {object}  args
+ * @param {string}  args.service
+ * @param {string} [args.stylist]
+ * @param {string} [args.fromDate]      YYYY-MM-DD or natural language (default: today)
+ * @param {number} [args.daysToSearch]  default 14 (clamped to the booking window)
+ */
+async function findEarliest(args) {
+  const data = await loadAndConfigure();
+  const tz = data.jsonMerchant.timezone;
+
+  const svc = resolveService(args.service, data.serviceJSON);
+  if (!svc.match) {
+    return {
+      ok: false,
+      error: 'unknown_service',
+      message: `I'm not sure which service you mean by "${args.service}".`,
+      candidates: svc.candidates,
+    };
+  }
+
+  const stylistRec = resolveStylist(args.stylist);
+  const employeeIndex = stylistRec ? stylistRec.index : null;
+
+  const today = todayParts(tz);
+  let startMs = today.startMs;
+  if (args.fromDate) {
+    const fd = resolveDate(args.fromDate, tz);
+    if (fd && fd.startMs > startMs) startMs = fd.startMs;
+  }
+
+  // Window to scan, clamped to the salon's booking window (monthsx).
+  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : 14;
+  daysToSearch = Math.min(daysToSearch, 45);
+  const maxDays = Math.floor((maxBookingMs(data.monthsx, tz) - startMs) / 86400000) + 1;
+  daysToSearch = Math.max(1, Math.min(daysToSearch, maxDays));
+
+  // ONE network read for the whole window; FillTimeArray filters to each day internally.
+  const appts = await getBookedAppointments(startMs, daysToSearch);
+  const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 6;
+
+  for (let i = 0; i < daysToSearch; i += 1) {
+    const m = moment.tz(startMs, tz).add(i, 'days');
+    const raw = core.computeAvailability({
+      apptJSON: appts,
+      year: m.year(),
+      month0: m.month(),
+      day: m.date(),
+      employeeIndex,
+      selectedServiceIndexes: [svc.match.index],
+    });
+    const { stylists, earliest } = shapeStylists(raw, cap);
+    if (stylists.length) {
+      return {
+        ok: true,
+        found: true,
+        daysAhead: i,
+        date: m.format('YYYY-MM-DD'),
+        weekday: m.format('dddd'),
+        timezone: tz,
+        service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
+        requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
+        anyStylist: employeeIndex == null,
+        earliest,
+        stylists,
+      };
+    }
+  }
 
   return {
     ok: true,
-    date: d.iso,
-    weekday: d.weekday,
-    timezone: tz,
-    service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
+    found: false,
+    daysSearched: daysToSearch,
+    service: { name: svc.match.name, index: svc.match.index },
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
-    anyStylist: employeeIndex == null,
-    available: stylists.length > 0,
-    earliest,
-    stylists,
+    message: `I don't see any ${svc.match.name} openings in the next ${daysToSearch} days${
+      stylistRec ? ` with ${stylistRec.full}` : ''
+    }.`,
   };
 }
 
-module.exports = { getAvailability, loadAndConfigure };
+module.exports = { getAvailability, findEarliest, loadAndConfigure };

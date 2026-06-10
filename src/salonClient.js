@@ -161,17 +161,13 @@ async function getBookedAppointments(startMs, numDays, { force = false } = {}) {
  * Warm the cache for today..+daysAhead (salon tz) with fresh pulls, so the first real lookup
  * during a call is instant. Each day is a 1-day window, matching getAvailability's call shape.
  */
-async function prefetchAppointments(daysAhead = 3, tz) {
+async function prefetchAppointments(daysAhead = 14, tz) {
   const moment = require('moment-timezone'); // local require avoids load-order coupling
   const zone = tz || process.env.SALON_TZ || 'Pacific/Honolulu';
-  const start = moment.tz(zone).startOf('day');
-  const tasks = [];
-  for (let i = 0; i <= daysAhead; i += 1) {
-    const ms = start.clone().add(i, 'days').valueOf();
-    tasks.push(getBookedAppointments(ms, 1, { force: true }).catch(() => null));
-  }
-  await Promise.all(tasks);
-  return { warmedDays: daysAhead + 1 };
+  const startMs = moment.tz(zone).startOf('day').valueOf();
+  // One range fetch warms the window used by find-earliest (cache key `${startMs}:${daysAhead}`).
+  await getBookedAppointments(startMs, daysAhead, { force: true }).catch(() => null);
+  return { warmedDays: daysAhead };
 }
 
 module.exports = {

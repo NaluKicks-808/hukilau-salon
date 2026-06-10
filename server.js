@@ -31,6 +31,7 @@ const {
   bookAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  findEarliestAvailability,
 } = require('./hukilau-booking');
 const { getSalonData, prefetchAppointments } = require('./src/salonClient');
 
@@ -42,6 +43,7 @@ const TOOLS = {
   book_appointment: bookAppointment,
   cancel_appointment: cancelAppointment,
   reschedule_appointment: rescheduleAppointment,
+  find_earliest_availability: findEarliestAvailability,
 };
 
 const app = express();
@@ -121,13 +123,14 @@ app.post('/vapi/check-availability', (req, res) => handleToolRequest(req, res, '
 app.post('/vapi/book-appointment', (req, res) => handleToolRequest(req, res, 'book_appointment'));
 app.post('/vapi/cancel-appointment', (req, res) => handleToolRequest(req, res, 'cancel_appointment'));
 app.post('/vapi/reschedule-appointment', (req, res) => handleToolRequest(req, res, 'reschedule_appointment'));
+app.post('/vapi/find-earliest', (req, res) => handleToolRequest(req, res, 'find_earliest_availability'));
 
 // Warm the caches (salon config + today..+2 days of appointments) to avoid cold-start lag.
 // Hit by the Vercel keep-warm cron; also usable as a manual ping.
 app.get('/warm', async (req, res) => {
   try {
     await getSalonData();
-    const warmed = await prefetchAppointments(2);
+    const warmed = await prefetchAppointments();
     res.json({ ok: true, ...warmed });
   } catch (err) {
     res.status(200).json({ ok: false, error: err.message });
@@ -143,7 +146,7 @@ app.post('/vapi/events', async (req, res) => {
     // Await so the warm completes reliably on serverless (post-response work can be frozen).
     // This webhook is off the conversation's critical path — Vapi doesn't gate the call on it.
     try {
-      await prefetchAppointments(3);
+      await prefetchAppointments();
     } catch (_) {
       /* best effort */
     }

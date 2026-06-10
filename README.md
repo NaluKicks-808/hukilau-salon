@@ -200,9 +200,24 @@ if it changed. Keep the lift faithful — don't "improve" it.
   "required": ["firstName", "lastName", "phone", "newDate", "newTime"]
 }
 ```
-Add cancel/reschedule to the assistant instructions, e.g.: *"To cancel, collect name, mobile,
-and the appointment date, then call `cancel_appointment`. To move an appointment, collect name,
-mobile, the service, and the new date/time, then call `reschedule_appointment`."*
+**`find_earliest_availability`** — for "when's the soonest I can get a ___?" Scans forward from
+today (one network fetch for the whole window) and returns the first day with an opening.
+```json
+{
+  "type": "object",
+  "properties": {
+    "service": { "type": "string", "description": "The service the caller wants (required)." },
+    "stylist": { "type": "string", "description": "Optional preferred stylist: Marcus, Kelli, Patricia, or Amanda." },
+    "fromDate": { "type": "string", "description": "Optional earliest date to start from (YYYY-MM-DD); defaults to today." },
+    "daysToSearch": { "type": "number", "description": "Optional days ahead to scan (default 14)." }
+  },
+  "required": ["service"]
+}
+```
+Add the new tools to the assistant instructions, e.g.: *"For 'what's the soonest I can get a ___',
+call `find_earliest_availability`. To cancel, collect name, mobile, and the appointment date, then
+call `cancel_appointment`. To move an appointment, collect name, mobile, the service, and the new
+date/time, then call `reschedule_appointment`."*
 
 ### Speed / no-lag
 - **Spoken filler (biggest perceived win):** on each tool in Vapi, set **Messages →
@@ -211,9 +226,12 @@ mobile, the service, and the new date/time, then call `reschedule_appointment`."
   (`APPT_CACHE_TTL_MS`, default 45000). Repeat lookups in a call are instant; fresh enough that
   owner confirmation stays the final dedupe. We never write to the salon, so our captures don't
   invalidate it.
-- **Keep-warm:** `GET /warm` warms the config + today..+2 days of appointments. `vercel.json`
-  runs it every 5 min via Cron — **needs the Vercel Pro plan** (you want Pro for commercial use
-  anyway); on Hobby, Fluid Compute + the filler still cover most cold-start lag.
+- **Keep-warm:** `GET /warm` warms the config + the next 14 days of appointments. A sub-daily
+  Vercel Cron is intentionally **not** in `vercel.json` — it requires the **Pro plan** and breaks
+  the build on Hobby. On Hobby, point a free external pinger (cron-job.org / UptimeRobot) at
+  `https://salon.pointy.help/warm` every few minutes; on Pro, add
+  `"crons": [{ "path": "/warm", "schedule": "*/5 * * * *" }]` to `vercel.json`. Fluid Compute +
+  prefetch + the filler already cover most cold-start lag regardless.
 - **Prefetch on call start:** `POST /vapi/events` warms today..+3 days when a call connects. Wire
   it by setting the assistant's **Server URL** to `https://salon.pointy.help/vapi/events` and
   limiting **Server Messages** to `status-update` (so you only get call-state pings, not every
