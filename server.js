@@ -160,6 +160,7 @@ app.get('/health', (req, res) =>
     tz: process.env.TZ,
     authEnabled: !!VAPI_SECRET,
     holdsStore: require('./src/pendingHolds').isConfigured(),
+    notify: require('./src/notify').MODE,
   })
 );
 
