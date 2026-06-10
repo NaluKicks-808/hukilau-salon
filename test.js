@@ -142,7 +142,6 @@ async function runLive() {
     global.fetch = realFetch;
   }
   ok(booking.ok, 'booking request captured');
-  ok(calledUrls.length > 0, 'booking re-checked availability over the network');
   ok(!calledUrls.some((u) => /bookcbbnew/i.test(u)), 'NEVER POSTed to bookcbbnew.php');
   ok(!calledUrls.some((u) => /bookcbb|book\.php|clover/i.test(u)), 'no booking/payment endpoint touched');
   ok(booking.data.delivery.channel === 'vapi-return', 'owner notify stays return-to-Vapi (nothing sent)');
@@ -156,6 +155,65 @@ async function runLive() {
     service, stylist: r.data.earliest.stylist, date: found.iso, time: '3:07 AM',
   });
   ok(!badSlot.ok && badSlot.error === 'slot_unavailable', 'unavailable time is rejected with alternatives');
+
+  section('LIVE: cancel & reschedule are CAPTURE-ONLY too');
+  {
+    const cancelMissing = await tools.cancelAppointment({ firstName: 'Test' });
+    ok(!cancelMissing.ok && cancelMissing.error === 'missing_fields', 'cancel requires name/phone/date');
+    const reschedMissing = await tools.rescheduleAppointment({ firstName: 'Test' });
+    ok(!reschedMissing.ok && reschedMissing.error === 'missing_fields', 'reschedule requires name/phone/new date+time');
+
+    const realFetch2 = global.fetch;
+    const urls2 = [];
+    global.fetch = (u, o) => {
+      urls2.push(String(u));
+      return realFetch2(u, o);
+    };
+    let cancel;
+    let resched;
+    try {
+      cancel = await tools.cancelAppointment({
+        firstName: 'Test', lastName: 'Caller', phone: '808-555-0000', date: found.iso, time: r.data.earliest.time,
+      });
+      resched = await tools.rescheduleAppointment({
+        firstName: 'Test', lastName: 'Caller', phone: '808-555-0000',
+        currentDate: found.iso, currentTime: r.data.earliest.time,
+        newDate: found.iso, newTime: r.data.earliest.time, service, stylist: r.data.earliest.stylist,
+      });
+    } finally {
+      global.fetch = realFetch2;
+    }
+    ok(cancel.ok, 'cancellation captured');
+    ok(/CANCELLATION/i.test(cancel.data.ownerMessage), 'owner gets a cancellation notice');
+    ok(resched.ok, 'reschedule captured');
+    ok(/RESCHEDULE/i.test(resched.data.ownerMessage), 'owner gets a reschedule notice');
+    ok(!urls2.some((u) => /bookcbbnew|clover/i.test(u)), 'cancel/reschedule NEVER write to the salon');
+    ok(
+      cancel.data.delivery.channel === 'vapi-return' && resched.data.delivery.channel === 'vapi-return',
+      'cancel/reschedule notify stays return-to-Vapi'
+    );
+  }
+
+  section('LIVE: appointments cache (repeat lookups hit cache, not network)');
+  {
+    const { getBookedAppointments } = require('./src/salonClient');
+    const { todayParts } = require('./src/datetime');
+    const startMs = todayParts().startMs;
+    const realFetch3 = global.fetch;
+    let networkCalls = 0;
+    global.fetch = (u, o) => {
+      if (/getappt\.php/i.test(String(u))) networkCalls += 1;
+      return realFetch3(u, o);
+    };
+    try {
+      await getBookedAppointments(startMs, 1, { force: true }); // prime (1 network call)
+      await getBookedAppointments(startMs, 1); // cached
+      await getBookedAppointments(startMs, 1); // cached
+    } finally {
+      global.fetch = realFetch3;
+    }
+    ok(networkCalls === 1, `3 lookups for the same day => 1 network call (got ${networkCalls})`);
+  }
 }
 
 (async () => {

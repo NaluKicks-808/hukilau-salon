@@ -23,6 +23,7 @@ const { getAvailability } = require('./src/availabilityEngine');
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
+const { resolveDate } = require('./src/datetime');
 
 // ---------- small speech/format helpers ----------
 
@@ -208,5 +209,148 @@ async function bookAppointment(args = {}) {
   };
 }
 
+// ---------- Tools 3 & 4: cancel / reschedule (capture + notify owner) ----------
+
+// Build a readable "when" from a caller-stated date (+ optional time). Falls back to the raw
+// text if the date can't be parsed, so a vague request still gets captured for the owner.
+function describeWhen(dateInput, timeInput) {
+  const d = resolveDate(dateInput);
+  const datePart = d ? `${d.weekday}, ${prettyDate(d.iso)}` : String(dateInput || '').trim();
+  const t = timeInput ? String(timeInput).trim() : '';
+  return { iso: d ? d.iso : null, text: t ? `${datePart} at ${t}` : datePart };
+}
+
+async function cancelAppointment(args = {}) {
+  const required = ['firstName', 'lastName', 'phone', 'date'];
+  const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
+  if (missing.length) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: `To cancel, I still need: ${speakList(missing)}.`,
+      data: { missing },
+    };
+  }
+
+  const when = describeWhen(args.date, args.time);
+  const requested = resolveStylist(args.stylist);
+  const cancellation = {
+    action: 'cancel',
+    status: 'pending_owner_action',
+    customer: {
+      firstName: String(args.firstName).trim(),
+      lastName: String(args.lastName).trim(),
+      phone: String(args.phone).trim(),
+      email: args.email ? String(args.email).trim() : null,
+    },
+    service: args.service ? String(args.service).trim() : null,
+    stylist: requested ? requested.full : args.stylist ? String(args.stylist).trim() : null,
+    date: when.iso,
+    when: when.text,
+    reason: args.reason ? String(args.reason).trim() : null,
+    note: args.note ? String(args.note).trim() : null,
+    source: 'vapi-ai-receptionist',
+    capturedAt: new Date().toISOString(),
+  };
+
+  const delivery = await notifyOwner(cancellation);
+  return {
+    ok: true,
+    message: `Okay — I've sent a cancellation request for ${when.text} to the salon, and they'll take care of it.`,
+    data: { cancellation, delivery, ownerMessage: formatOwnerMessage(cancellation) },
+  };
+}
+
+async function rescheduleAppointment(args = {}) {
+  const required = ['firstName', 'lastName', 'phone', 'newDate', 'newTime'];
+  const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
+  if (missing.length) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: `To reschedule, I still need: ${speakList(missing)}.`,
+      data: { missing },
+    };
+  }
+
+  const requested = resolveStylist(args.stylist);
+  const fromWhen = describeWhen(args.currentDate, args.currentTime).text;
+  let serviceName = args.service ? String(args.service).trim() : null;
+  let stylistName = requested ? requested.full : args.stylist ? String(args.stylist).trim() : null;
+  let newWhen;
+
+  // If we know the service, verify the NEW slot is actually open (same guard as booking).
+  if (serviceName) {
+    const r = await getAvailability({ date: args.newDate, service: args.service, stylist: '' });
+    if (!r.ok) {
+      let message = r.message;
+      if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
+        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+      }
+      return { ok: false, error: r.error, message, data: r };
+    }
+    const wantMin = parseClock(args.newTime);
+    const pool = requested ? r.stylists.filter((s) => s.stylistIndex === requested.index) : r.stylists;
+    let chosen = null;
+    for (const s of pool) {
+      const slot = s.slots.find(
+        (x) => x.minutesIntoDay === wantMin || x.time.toLowerCase() === String(args.newTime).trim().toLowerCase()
+      );
+      if (slot) {
+        chosen = { stylist: s, slot };
+        break;
+      }
+    }
+    const whenLabel = `${r.weekday}, ${prettyDate(r.date)}`;
+    if (!chosen) {
+      const fallback = pool[0] || r.stylists[0];
+      const alt = fallback ? ` The closest open times are ${speakSlots(fallback.slots, 3)}.` : '';
+      return {
+        ok: false,
+        error: 'slot_unavailable',
+        message: `Sorry, ${args.newTime} isn't open${requested ? ` with ${requested.full}` : ''} on ${whenLabel}.${alt}`,
+        data: r,
+      };
+    }
+    serviceName = r.service.name;
+    stylistName = chosen.stylist.stylist;
+    newWhen = `${whenLabel} at ${chosen.slot.time} (HST)`;
+  } else {
+    // No service stated — capture without the open-slot check; the owner validates.
+    newWhen = describeWhen(args.newDate, args.newTime).text;
+  }
+
+  const reschedule = {
+    action: 'reschedule',
+    status: 'pending_owner_action',
+    customer: {
+      firstName: String(args.firstName).trim(),
+      lastName: String(args.lastName).trim(),
+      phone: String(args.phone).trim(),
+      email: args.email ? String(args.email).trim() : null,
+    },
+    service: serviceName,
+    stylist: stylistName,
+    fromWhen,
+    when: newWhen,
+    note: args.note ? String(args.note).trim() : null,
+    source: 'vapi-ai-receptionist',
+    capturedAt: new Date().toISOString(),
+  };
+
+  const delivery = await notifyOwner(reschedule);
+  return {
+    ok: true,
+    message: `Done — I've asked the salon to move your appointment to ${newWhen}. They'll confirm shortly.`,
+    data: { reschedule, delivery, ownerMessage: formatOwnerMessage(reschedule) },
+  };
+}
+
 // parseClock is exported for unit tests.
-module.exports = { checkAvailability, bookAppointment, parseClock };
+module.exports = {
+  checkAvailability,
+  bookAppointment,
+  cancelAppointment,
+  rescheduleAppointment,
+  parseClock,
+};

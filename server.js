@@ -26,7 +26,13 @@
 process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const express = require('express');
-const { checkAvailability, bookAppointment } = require('./hukilau-booking');
+const {
+  checkAvailability,
+  bookAppointment,
+  cancelAppointment,
+  rescheduleAppointment,
+} = require('./hukilau-booking');
+const { getSalonData, prefetchAppointments } = require('./src/salonClient');
 
 const PORT = process.env.PORT || 8787;
 const VAPI_SECRET = process.env.VAPI_SECRET || '';
@@ -34,6 +40,8 @@ const VAPI_SECRET = process.env.VAPI_SECRET || '';
 const TOOLS = {
   check_availability: checkAvailability,
   book_appointment: bookAppointment,
+  cancel_appointment: cancelAppointment,
+  reschedule_appointment: rescheduleAppointment,
 };
 
 const app = express();
@@ -64,11 +72,18 @@ function extractToolCalls(body) {
   });
 }
 
-// Shape a tool function's output into Vapi's `result` value.
+// Capture tools hand the structured request back to Vapi (under its natural key) so a workflow
+// can deliver it to the owner; everything else returns the spoken string.
+const CAPTURE_KEYS = {
+  book_appointment: 'booking',
+  cancel_appointment: 'cancellation',
+  reschedule_appointment: 'reschedule',
+};
+
 function toResult(toolName, out) {
-  if (toolName === 'book_appointment' && out.ok) {
-    // Hand the structured request back to Vapi so the workflow can deliver it to the owner.
-    return { message: out.message, booking: out.data.booking, ownerMessage: out.data.ownerMessage };
+  const key = CAPTURE_KEYS[toolName];
+  if (key && out.ok) {
+    return { message: out.message, ownerMessage: out.data.ownerMessage, [key]: out.data[key] };
   }
   return out.message; // spoken string (availability, or any error/clarification)
 }
@@ -104,6 +119,37 @@ async function handleToolRequest(req, res, defaultTool) {
 app.post('/vapi/tools', (req, res) => handleToolRequest(req, res, null));
 app.post('/vapi/check-availability', (req, res) => handleToolRequest(req, res, 'check_availability'));
 app.post('/vapi/book-appointment', (req, res) => handleToolRequest(req, res, 'book_appointment'));
+app.post('/vapi/cancel-appointment', (req, res) => handleToolRequest(req, res, 'cancel_appointment'));
+app.post('/vapi/reschedule-appointment', (req, res) => handleToolRequest(req, res, 'reschedule_appointment'));
+
+// Warm the caches (salon config + today..+2 days of appointments) to avoid cold-start lag.
+// Hit by the Vercel keep-warm cron; also usable as a manual ping.
+app.get('/warm', async (req, res) => {
+  try {
+    await getSalonData();
+    const warmed = await prefetchAppointments(2);
+    res.json({ ok: true, ...warmed });
+  } catch (err) {
+    res.status(200).json({ ok: false, error: err.message });
+  }
+});
+
+// Vapi call events. When a call connects, prefetch the next few days so the first availability
+// lookup is instant. Responds 200 immediately; the prefetch runs fire-and-forget.
+app.post('/vapi/events', async (req, res) => {
+  if (!checkSecret(req, res)) return;
+  const msg = (req.body && req.body.message) || {};
+  if (msg.type === 'status-update' && (msg.status === 'in-progress' || msg.status === 'started')) {
+    // Await so the warm completes reliably on serverless (post-response work can be frozen).
+    // This webhook is off the conversation's critical path — Vapi doesn't gate the call on it.
+    try {
+      await prefetchAppointments(3);
+    } catch (_) {
+      /* best effort */
+    }
+  }
+  res.json({ ok: true });
+});
 
 app.get('/health', (req, res) => res.json({ ok: true, tz: process.env.TZ, authEnabled: !!VAPI_SECRET }));
 

@@ -15,16 +15,42 @@
 const MODE = process.env.NOTIFY_MODE || 'return';
 
 function formatOwnerMessage(b) {
-  return [
-    'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
-    `${b.customer.firstName} ${b.customer.lastName} — ${b.customer.phone}`,
-    `${b.service} with ${b.stylist}`,
-    `${b.when}`,
-    b.note ? `Note: ${b.note}` : null,
-    'Please enter it in Salon Scheduler to confirm (deposit may apply).',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const action = b.action || 'book';
+  const who = `${b.customer.firstName} ${b.customer.lastName} — ${b.customer.phone}`;
+  const svcStylist = [b.service, b.stylist].filter(Boolean).join(' with ');
+  let lines;
+
+  if (action === 'cancel') {
+    lines = [
+      'CANCELLATION REQUEST (not yet changed in Salon Scheduler):',
+      who,
+      `Appointment to cancel: ${svcStylist || '(see time)'}`,
+      b.when,
+      b.reason ? `Reason: ${b.reason}` : null,
+      b.note ? `Note: ${b.note}` : null,
+      'Please cancel it in Salon Scheduler.',
+    ];
+  } else if (action === 'reschedule') {
+    lines = [
+      'RESCHEDULE REQUEST (not yet changed in Salon Scheduler):',
+      who,
+      svcStylist || null,
+      `From: ${b.fromWhen || '(time not given)'}`,
+      `To:   ${b.when}`,
+      b.note ? `Note: ${b.note}` : null,
+      'Please move it in Salon Scheduler to confirm (deposit may apply).',
+    ];
+  } else {
+    lines = [
+      'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
+      who,
+      `${b.service} with ${b.stylist}`,
+      b.when,
+      b.note ? `Note: ${b.note}` : null,
+      'Please enter it in Salon Scheduler to confirm (deposit may apply).',
+    ];
+  }
+  return lines.filter(Boolean).join('\n');
 }
 
 async function sendTwilio(b) {

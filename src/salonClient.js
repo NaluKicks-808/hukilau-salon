@@ -110,11 +110,24 @@ async function getSalonData({ force = false } = {}) {
   return data;
 }
 
+// Short-lived cache of booked-appointment pulls. Keeps repeated lookups within one call
+// instant without risking staleness: a ~45s window is fresh enough that the owner-confirmation
+// step remains the real dedupe. We never write to the salon, so our captures don't change it.
+const APPT_CACHE_TTL_MS = Number(process.env.APPT_CACHE_TTL_MS) || 45000;
+const apptCache = new Map(); // `${startMs}:${numDays}` -> { fetchedAt, appts }
+
 /**
  * POST getappt.php and parse the response into an array of appointment objects.
  * Mirrors cbbe2.js `getappointments(startdateSecs, numdays)` (start/end are unix ms).
+ * Cached for APPT_CACHE_TTL_MS; pass { force: true } to bypass.
  */
-async function getBookedAppointments(startMs, numDays) {
+async function getBookedAppointments(startMs, numDays, { force = false } = {}) {
+  const key = `${startMs}:${numDays}`;
+  if (!force) {
+    const hit = apptCache.get(key);
+    if (hit && Date.now() - hit.fetchedAt < APPT_CACHE_TTL_MS) return hit.appts;
+  }
+
   const body = new URLSearchParams({
     start: String(startMs),
     end: String(startMs + 86400000 * numDays),
@@ -140,12 +153,31 @@ async function getBookedAppointments(startMs, numDays) {
       // Skip malformed chunks; the browser client is similarly lenient.
     }
   }
+  apptCache.set(key, { fetchedAt: Date.now(), appts });
   return appts;
+}
+
+/**
+ * Warm the cache for today..+daysAhead (salon tz) with fresh pulls, so the first real lookup
+ * during a call is instant. Each day is a 1-day window, matching getAvailability's call shape.
+ */
+async function prefetchAppointments(daysAhead = 3, tz) {
+  const moment = require('moment-timezone'); // local require avoids load-order coupling
+  const zone = tz || process.env.SALON_TZ || 'Pacific/Honolulu';
+  const start = moment.tz(zone).startOf('day');
+  const tasks = [];
+  for (let i = 0; i <= daysAhead; i += 1) {
+    const ms = start.clone().add(i, 'days').valueOf();
+    tasks.push(getBookedAppointments(ms, 1, { force: true }).catch(() => null));
+  }
+  await Promise.all(tasks);
+  return { warmedDays: daysAhead + 1 };
 }
 
 module.exports = {
   getSalonData,
   getBookedAppointments,
+  prefetchAppointments,
   MERCHANT_ID,
   PAGE_URL,
   APPT_URL,

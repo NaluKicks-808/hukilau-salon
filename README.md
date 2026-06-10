@@ -156,5 +156,71 @@ if it changed. Keep the lift faithful — don't "improve" it.
 - **Timezone:** all date math is Pacific/Honolulu (UTC−10, no DST). The npm scripts pin
   `TZ=Pacific/Honolulu`; set it in your deploy environment too.
 - **Booking window:** ~3 months out (`monthsx`). **Increments:** 15 minutes.
-- **Safety:** this service only ever *reads* from the salon system. It does not write bookings,
-  cancel, or process payments.
+- **Safety:** this service only ever *reads* from the salon system. Bookings, cancels, and
+  reschedules are **captured and handed to the owner** — it never writes to the salon or
+  processes payments.
+
+---
+
+## Round 2 — speed pack + cancel/reschedule
+
+### Two more tools (same Custom Tool setup, Server URL `…/vapi/tools`)
+**`cancel_appointment`** — captures a cancellation request for the owner. Parameters:
+```json
+{
+  "type": "object",
+  "properties": {
+    "firstName": { "type": "string" },
+    "lastName": { "type": "string" },
+    "phone": { "type": "string" },
+    "date": { "type": "string", "description": "Date of the appointment to cancel (YYYY-MM-DD, Hawaii time)." },
+    "time": { "type": "string", "description": "Approximate time of the appointment, if known (e.g. \"2:00 PM\")." },
+    "service": { "type": "string", "description": "Service, if the caller mentions it." },
+    "stylist": { "type": "string", "description": "Stylist, if known: Marcus, Kelli, Patricia, or Amanda." },
+    "reason": { "type": "string", "description": "Optional reason for cancelling." }
+  },
+  "required": ["firstName", "lastName", "phone", "date"]
+}
+```
+**`reschedule_appointment`** — confirms the new slot is open, then captures the change. Parameters:
+```json
+{
+  "type": "object",
+  "properties": {
+    "firstName": { "type": "string" },
+    "lastName": { "type": "string" },
+    "phone": { "type": "string" },
+    "currentDate": { "type": "string", "description": "Current appointment date (YYYY-MM-DD), if known." },
+    "currentTime": { "type": "string", "description": "Current appointment time, if known." },
+    "newDate": { "type": "string", "description": "Requested new date (YYYY-MM-DD, Hawaii time)." },
+    "newTime": { "type": "string", "description": "Requested new start time, e.g. \"10:15 AM\"." },
+    "service": { "type": "string", "description": "Service (needed to confirm the new slot is open)." },
+    "stylist": { "type": "string", "description": "Preferred stylist: Marcus, Kelli, Patricia, or Amanda." }
+  },
+  "required": ["firstName", "lastName", "phone", "newDate", "newTime"]
+}
+```
+Add cancel/reschedule to the assistant instructions, e.g.: *"To cancel, collect name, mobile,
+and the appointment date, then call `cancel_appointment`. To move an appointment, collect name,
+mobile, the service, and the new date/time, then call `reschedule_appointment`."*
+
+### Speed / no-lag
+- **Spoken filler (biggest perceived win):** on each tool in Vapi, set **Messages →
+  request-start** to e.g. *"Let me check our schedule, one moment."* Masks the lookup.
+- **Short appointments cache:** `getBookedAppointments` is cached in-memory ~45s
+  (`APPT_CACHE_TTL_MS`, default 45000). Repeat lookups in a call are instant; fresh enough that
+  owner confirmation stays the final dedupe. We never write to the salon, so our captures don't
+  invalidate it.
+- **Keep-warm:** `GET /warm` warms the config + today..+2 days of appointments. `vercel.json`
+  runs it every 5 min via Cron — **needs the Vercel Pro plan** (you want Pro for commercial use
+  anyway); on Hobby, Fluid Compute + the filler still cover most cold-start lag.
+- **Prefetch on call start:** `POST /vapi/events` warms today..+3 days when a call connects. Wire
+  it by setting the assistant's **Server URL** to `https://salon.pointy.help/vapi/events` and
+  limiting **Server Messages** to `status-update` (so you only get call-state pings, not every
+  transcript).
+
+### Why not a self-managed calendar / CSV
+The salon's real calendar changes outside our control (walk-ins, their website, staff edits), so
+a long-lived cache would re-introduce double-booking — the one thing this prevents. And Vercel's
+serverless disk is ephemeral, so a CSV wouldn't persist. Short cache + prefetch + keep-warm gets
+the speed safely.
