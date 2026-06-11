@@ -236,6 +236,34 @@ async function runLive() {
   ok(offMenu.data.booking.offMenu === true, 'off-menu booking is flagged');
   ok(/OFF-MENU/i.test(offMenu.data.ownerMessage), 'owner message flags off-menu / custom');
 
+  section('LIVE: booking validates the FULL day (not just the speech cap) + phone sanity');
+  {
+    const fullDay = await tools.checkAvailability({ date: found.iso, service, stylist: '', maxPerStylist: 50 });
+    const busy = (fullDay.data.stylists || []).find((s) => s.slots.length > 8);
+    if (busy) {
+      const lateSlot = busy.slots[busy.slots.length - 1]; // a slot well past the first 8
+      const realFetchB = global.fetch;
+      const urlsB = [];
+      global.fetch = (u, o) => { urlsB.push(String(u)); return realFetchB(u, o); };
+      let lateBook;
+      try {
+        lateBook = await tools.bookAppointment({
+          firstName: 'Late', lastName: 'Slot', phone: '8085550000',
+          service, stylist: busy.stylist, date: found.iso, time: lateSlot.time,
+        });
+      } finally { global.fetch = realFetchB; }
+      ok(lateBook.ok, `can book a late slot (${lateSlot.time}, #${busy.slots.length}) beyond the 8-slot speech cap`);
+      ok(!urlsB.some((u) => /bookcbbnew|clover/i.test(u)), 'late-slot booking still never writes to the salon');
+    } else {
+      console.log('   (no stylist with >8 slots on the test day; skipping late-slot check)');
+    }
+    const badPhone = await tools.bookAppointment({
+      firstName: 'Bad', lastName: 'Phone', phone: '555-1234',
+      service, stylist: '', date: found.iso, time: r.data.earliest.time,
+    });
+    ok(!badPhone.ok && badPhone.error === 'invalid_phone', 'a too-short phone is re-asked, not captured');
+  }
+
   section('LIVE: cancel & reschedule are CAPTURE-ONLY too');
   {
     const cancelMissing = await tools.cancelAppointment({ firstName: 'Test' });

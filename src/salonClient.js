@@ -25,6 +25,19 @@ const APPT_URL = 'https://reports.appheaven.us/online/getappt.php';
 const SNAPSHOT = path.join(__dirname, '..', 'vendor', 'page.snapshot.html');
 const TTL_MS = 6 * 60 * 60 * 1000; // re-fetch salon config at most every 6h
 
+// Hard timeout on every salon-backend fetch so a stalled backend can never hang a live phone
+// call (Vercel would otherwise let it run to the 30s function max — dead air for the caller).
+const FETCH_TIMEOUT_MS = Number(process.env.SALON_FETCH_TIMEOUT_MS) || 9000;
+async function fetchWithTimeout(url, opts = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let cache = null; // { fetchedAt, data }
 
 function extractPageData(html) {
@@ -81,7 +94,7 @@ function extractPageData(html) {
 }
 
 async function fetchPageHtml() {
-  const res = await fetch(PAGE_URL, {
+  const res = await fetchWithTimeout(PAGE_URL, {
     headers: { 'User-Agent': 'Mozilla/5.0 (hukilau-receptionist availability bot)' },
   });
   if (!res.ok) throw new Error(`Booking page fetch failed: HTTP ${res.status}`);
@@ -133,7 +146,7 @@ async function getBookedAppointments(startMs, numDays, { force = false } = {}) {
     end: String(startMs + 86400000 * numDays),
     merchantid: MERCHANT_ID,
   });
-  const res = await fetch(APPT_URL, {
+  const res = await fetchWithTimeout(APPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,

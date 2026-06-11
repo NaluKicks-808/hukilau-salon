@@ -81,6 +81,14 @@ function parseClock(input) {
   return h * 60 + min;
 }
 
+// Voice transcription often drops/mangles phone digits, and a wrong number means the owner can't
+// confirm the booking. We don't reformat (keep what the caller said for the owner) — we just flag
+// when it's clearly incomplete so the assistant re-asks. Lenient: US 10/11-digit or intl up to 15.
+function phoneLooksValid(input) {
+  const digits = String(input || '').replace(/\D/g, '');
+  return digits.length >= 10 && digits.length <= 15;
+}
+
 // Format minutes-into-day for speech: 840 -> "2 PM", 855 -> "2:15 PM".
 function clockLabel(mins) {
   const m = moment().startOf('day').add(mins, 'minutes');
@@ -212,11 +220,21 @@ async function bookAppointment(args = {}) {
       data: { missing },
     };
   }
+  if (!phoneLooksValid(args.phone)) {
+    return {
+      ok: false,
+      error: 'invalid_phone',
+      message: "I want to make sure the salon can reach you — could you say your phone number again, including the area code?",
+      data: { phone: args.phone },
+    };
+  }
 
   const requested = resolveStylist(args.stylist);
 
   // Re-check availability right now (light double-book guard), across all stylists.
-  const r = await getAvailability({ date: args.date, service: args.service, stylist: '' });
+  // Validate against the FULL day's slots (high cap), not the 8-slot speech cap — otherwise a
+  // genuinely-open later slot (e.g. 4 PM on a light day) gets wrongly rejected as unavailable.
+  const r = await getAvailability({ date: args.date, service: args.service, stylist: '', maxPerStylist: 500 });
   if (!r.ok) {
     // Off-menu / custom service: don't turn callers away. Capture the request with a note and
     // let the salon confirm service, price, and time. (The date was already validated above.)
@@ -244,6 +262,18 @@ async function bookAppointment(args = {}) {
         capturedAt: new Date().toISOString(),
       };
       const delivery = await notifyOwner(booking);
+      // Block the slot for the next caller too (best-effort). Off-menu has no known duration, so
+      // assume 60 min; holds only ever ADD a block, so over-blocking is safe.
+      const offMin = parseClock(args.time);
+      if (reqStylist && offMin != null && when.iso) {
+        await addHold({
+          dateIso: when.iso,
+          stylistIndex: reqStylist.index,
+          startMinutes: offMin,
+          durationMinutes: 60,
+          meta: { name: `${booking.customer.firstName} ${booking.customer.lastName}`, service: booking.service, offMenu: true },
+        }).catch(() => {});
+      }
       return {
         ok: true,
         message: `Okay — I've sent your request for ${booking.service} on ${when.text} to the salon, and they'll confirm with you shortly.`,
@@ -399,7 +429,8 @@ async function rescheduleAppointment(args = {}) {
 
   // If we know the service, verify the NEW slot is actually open (same guard as booking).
   if (serviceName) {
-    const r = await getAvailability({ date: args.newDate, service: args.service, stylist: '' });
+    // Full day's slots (high cap), not the speech cap — so a valid later slot isn't wrongly rejected.
+    const r = await getAvailability({ date: args.newDate, service: args.service, stylist: '', maxPerStylist: 500 });
     if (!r.ok) {
       let message = r.message;
       if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
