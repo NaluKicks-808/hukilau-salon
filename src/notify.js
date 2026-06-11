@@ -88,17 +88,25 @@ async function sendTelnyx(b) {
   const payload = { to: OWNER_PHONE, text: formatOwnerMessage(b) };
   if (TELNYX_FROM) payload.from = TELNYX_FROM;
   else payload.messaging_profile_id = TELNYX_MESSAGING_PROFILE_ID;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000); // never let SMS hang the tool response
   try {
     const res = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: ctrl.signal,
     });
-    if (res.ok) return { delivered: true, channel: 'telnyx', detail: 'sent' };
+    if (res.ok) {
+      const j = await res.json().catch(() => null);
+      return { delivered: true, channel: 'telnyx', detail: 'sent', id: j && j.data && j.data.id };
+    }
     const err = await res.text().catch(() => '');
     return { delivered: false, channel: 'telnyx', detail: `HTTP ${res.status} ${err.slice(0, 200)}` };
   } catch (e) {
-    return { delivered: false, channel: 'telnyx', detail: e.message };
+    return { delivered: false, channel: 'telnyx', detail: e.name === 'AbortError' ? 'timeout' : e.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -74,29 +74,30 @@ function extractToolCalls(body) {
   });
 }
 
-// Capture tools hand the structured request back to Vapi (under its natural key) so a workflow
-// can deliver it to the owner; everything else returns the spoken string.
-const CAPTURE_KEYS = {
-  book_appointment: 'booking',
-  cancel_appointment: 'cancellation',
-  reschedule_appointment: 'reschedule',
-};
-
+// Always return a plain SPEAKABLE STRING to Vapi. Some Vapi versions reject object results with
+// "No result returned", and owner delivery now happens out-of-band via SMS (Telnyx) — so Vapi
+// only needs the line for the assistant to say.
 function toResult(toolName, out) {
-  const key = CAPTURE_KEYS[toolName];
-  if (key && out.ok) {
-    return { message: out.message, ownerMessage: out.data.ownerMessage, [key]: out.data[key] };
-  }
-  return out.message; // spoken string (availability, or any error/clarification)
+  return out.message;
+}
+
+// Mask a phone number to its last 4 digits for logs.
+function maskPhone(args) {
+  if (!args || typeof args !== 'object' || !args.phone) return args;
+  return { ...args, phone: String(args.phone).replace(/.(?=.{4})/g, '*') };
 }
 
 async function handleToolRequest(req, res, defaultTool) {
   if (!checkSecret(req, res)) return;
+  const callId = req.body && req.body.message && req.body.message.call && req.body.message.call.id;
   const calls = extractToolCalls(req.body);
 
   if (!calls.length && defaultTool) {
     // Allow a bare {date,service,stylist} body for easy manual testing of a route.
     calls.push({ id: 'manual', name: defaultTool, args: req.body || {} });
+  }
+  if (!calls.length) {
+    console.log(JSON.stringify({ evt: 'tool_call', callId, warn: 'no tool calls parsed', bodyKeys: Object.keys(req.body || {}) }));
   }
 
   const results = [];
@@ -106,12 +107,35 @@ async function handleToolRequest(req, res, defaultTool) {
     try {
       if (!fn) throw new Error(`unknown tool: ${toolName}`);
       const out = await fn(call.args);
-      results.push({ toolCallId: call.id, result: toResult(toolName, out) });
+      const result = toResult(toolName, out);
+      results.push({ toolCallId: call.id, result });
+      console.log(
+        JSON.stringify({
+          evt: 'tool_call',
+          callId,
+          toolCallId: call.id,
+          tool: toolName,
+          ok: out.ok,
+          error: out.error || null,
+          delivery: out.data && out.data.delivery ? out.data.delivery : undefined,
+          args: maskPhone(call.args),
+          resultPreview: String(result).slice(0, 180),
+        })
+      );
     } catch (err) {
-      console.error(`[tool ${toolName}] error:`, err.message);
+      console.error(
+        JSON.stringify({
+          evt: 'tool_error',
+          callId,
+          toolCallId: call.id,
+          tool: toolName,
+          error: err.message,
+          stack: (err.stack || '').split('\n').slice(0, 3),
+        })
+      );
       results.push({
         toolCallId: call.id,
-        result: "Sorry, I hit a problem checking that just now. Could you try again in a moment?",
+        result: "Sorry, I hit a snag just now — could you try again in a moment? I can also have the salon follow up with you.",
       });
     }
   }
@@ -154,6 +178,7 @@ app.post('/vapi/events', async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/', (req, res) => res.json({ ok: true, service: 'hukilau-receptionist' }));
 app.get('/health', (req, res) =>
   res.json({
     ok: true,
