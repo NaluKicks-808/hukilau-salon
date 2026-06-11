@@ -32,6 +32,17 @@ function windowFromArgs(args) {
   return afterMin != null || beforeMin != null ? { afterMin, beforeMin } : null;
 }
 
+// Build a {include, exclude} day-of-week filter from numeric weekday arrays (0=Sun..6=Sat),
+// pre-parsed by the tool layer ("besides Thursdays", "weekends only"). Enforced in findEarliest's
+// forward scan: a day whose weekday fails the filter is skipped, same as an out-of-window day.
+function dayFilterFromArgs(args) {
+  const clean = (a) => (Array.isArray(a) ? a.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6) : []);
+  const include = clean(args.includeDays);
+  const exclude = clean(args.excludeDays);
+  if (!include.length && !exclude.length) return null;
+  return { include: include.length ? include : null, exclude: exclude.length ? exclude : null };
+}
+
 /**
  * @param {object} args
  * @param {string} args.date     "YYYY-MM-DD" or natural language ("tomorrow")
@@ -192,6 +203,7 @@ async function findEarliest(args) {
   const stylistRec = resolveStylist(args.stylist);
   const employeeIndex = stylistRec ? stylistRec.index : null;
   const window = windowFromArgs(args);
+  const dayFilter = dayFilterFromArgs(args);
 
   const today = todayParts(tz);
   let startMs = today.startMs;
@@ -203,7 +215,7 @@ async function findEarliest(args) {
   // Window of days to scan, clamped to the salon's booking window (monthsx). A time-of-day
   // constraint can push the first match well past the default 14 days (afternoons fill up), so
   // scan further by default when one is set — it's all in-memory off a single fetch.
-  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : window ? 30 : 14;
+  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : window || dayFilter ? 30 : 14;
   daysToSearch = Math.min(daysToSearch, 45);
   const maxDays = Math.floor((maxBookingMs(data.monthsx, tz) - startMs) / 86400000) + 1;
   daysToSearch = Math.max(1, Math.min(daysToSearch, maxDays));
@@ -214,6 +226,11 @@ async function findEarliest(args) {
 
   for (let i = 0; i < daysToSearch; i += 1) {
     const m = moment.tz(startMs, tz).add(i, 'days');
+    if (dayFilter) {
+      const wd = m.day(); // 0=Sun..6=Sat
+      if (dayFilter.include && !dayFilter.include.includes(wd)) continue;
+      if (dayFilter.exclude && dayFilter.exclude.includes(wd)) continue;
+    }
     const raw = core.computeAvailability({
       apptJSON: appts,
       year: m.year(),
@@ -238,6 +255,7 @@ async function findEarliest(args) {
         requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
         anyStylist: employeeIndex == null,
         window,
+        dayFilter,
         earliest,
         stylists,
       };
@@ -251,6 +269,7 @@ async function findEarliest(args) {
     service: { name: svc.match.name, index: svc.match.index },
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
     window,
+    dayFilter,
     message: `I don't see any ${svc.match.name} openings in the next ${daysToSearch} days${
       stylistRec ? ` with ${stylistRec.full}` : ''
     }.`,

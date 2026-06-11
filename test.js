@@ -75,6 +75,16 @@ function runUnit() {
   ok(tools.parseClock('14:30') === 870, '24h 14:30 -> 870');
   ok(tools.parseClock('garbage') === null, 'garbage -> null');
 
+  section('parseWeekdays');
+  const sameSet = (a, b) => !!a && JSON.stringify(a.slice().sort((x, y) => x - y)) === JSON.stringify(b.slice().sort((x, y) => x - y));
+  ok(sameSet(tools.parseWeekdays(['Thursday']), [4]), "['Thursday'] -> [4]");
+  ok(sameSet(tools.parseWeekdays('Tuesdays or Wednesdays'), [2, 3]), "'Tuesdays or Wednesdays' -> [2,3]");
+  ok(sameSet(tools.parseWeekdays('weekends'), [0, 6]), "'weekends' -> [Sun,Sat]");
+  ok(sameSet(tools.parseWeekdays('weekdays'), [1, 2, 3, 4, 5]), "'weekdays' -> Mon..Fri");
+  ok(sameSet(tools.parseWeekdays(['Sat', 'Sun']), [0, 6]), "['Sat','Sun'] -> [Sun,Sat]");
+  ok(tools.parseWeekdays('garbage') === null, "'garbage' -> null");
+  ok(tools.parseWeekdays(null) === null, 'null -> null');
+
   section('pending-holds overlay (unit)');
   const { shapeStylists } = require('./src/availabilityEngine');
   const fakeRaw = [
@@ -312,6 +322,19 @@ async function runLive() {
       ok(tools.parseClock(afterPM.data.earliest.time) >= 840, 'the announced earliest time is itself at/after 2:00 PM');
     }
     console.log('   ' + afterPM.message);
+
+    // Day-of-week constraints, enforced server-side like the time window.
+    const base = await tools.findEarliestAvailability({ service: "women's cut & style" });
+    if (base.data && base.data.found) {
+      const wd = base.data.weekday; // e.g. "Friday"
+      const excl = await tools.findEarliestAvailability({ service: "women's cut & style", excludeDaysOfWeek: [wd] });
+      ok(excl.ok, 'find_earliest accepts excludeDaysOfWeek');
+      if (excl.data.found) ok(excl.data.weekday !== wd, `excluding ${wd} returns a different weekday (got ${excl.data.weekday})`);
+      const sat = await tools.findEarliestAvailability({ service: "women's cut & style", daysOfWeek: ['Saturday'] });
+      ok(sat.ok, 'find_earliest accepts daysOfWeek');
+      if (sat.data.found) ok(sat.data.weekday === 'Saturday', `daysOfWeek=[Saturday] returns a Saturday (got ${sat.data.weekday})`);
+      console.log('   ' + sat.message);
+    }
   }
 }
 

@@ -96,6 +96,43 @@ function windowPhrase(afterMin, beforeMin) {
   return '';
 }
 
+const WEEKDAY_INDEX = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3, weds: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+};
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// Parse caller weekday references into unique day indices (0=Sun..6=Sat), or null.
+// Accepts an array (["Thursday"]) or a string ("Tuesdays or Wednesdays", "weekends", "weekdays").
+function parseWeekdays(input) {
+  if (input == null) return null;
+  const items = Array.isArray(input) ? input : String(input).split(/\s*(?:,|\/|&|\bor\b|\band\b)\s*/i);
+  const out = [];
+  for (const raw of items) {
+    const key = String(raw).trim().toLowerCase().replace(/s$/, ''); // "tuesdays" -> "tuesday"
+    if (key === 'weekend') out.push(0, 6);
+    else if (key === 'weekday') out.push(1, 2, 3, 4, 5);
+    else if (WEEKDAY_INDEX[key] != null) out.push(WEEKDAY_INDEX[key]);
+  }
+  return out.length ? [...new Set(out)] : null;
+}
+
+function speakDays(indices) {
+  return speakList(indices.slice().sort((a, b) => a - b).map((i) => `${DAY_NAMES[i]}s`));
+}
+
+// Spoken phrase for a day-of-week constraint, or '': "on Saturdays and Sundays", "excluding Thursdays".
+function dayPhrase(includeDays, excludeDays) {
+  if (includeDays && includeDays.length) return `on ${speakDays(includeDays)}`;
+  if (excludeDays && excludeDays.length) return `excluding ${speakDays(excludeDays)}`;
+  return '';
+}
+
 // ---------- Tool 1: check_availability ----------
 
 async function checkAvailability(args = {}) {
@@ -453,8 +490,13 @@ async function findEarliestAvailability(args = {}) {
   // engine scans forward day by day and returns the first slot that actually satisfies it.
   const afterMin = parseClock(args.afterTime);
   const beforeMin = parseClock(args.beforeTime);
-  const win = windowPhrase(afterMin, beforeMin);
-  const winSuffix = win ? ` ${win}` : '';
+  const includeDays = parseWeekdays(args.daysOfWeek);
+  const excludeDays = parseWeekdays(args.excludeDaysOfWeek);
+  // Combined spoken phrase for any time + day constraints, e.g. " after 2 PM excluding Thursdays".
+  const cSuffix = [windowPhrase(afterMin, beforeMin), dayPhrase(includeDays, excludeDays)]
+    .filter(Boolean)
+    .map((p) => ` ${p}`)
+    .join('');
 
   const r = await findEarliest({
     service: args.service,
@@ -463,6 +505,8 @@ async function findEarliestAvailability(args = {}) {
     daysToSearch: args.daysToSearch,
     afterMin,
     beforeMin,
+    includeDays,
+    excludeDays,
   });
   if (!r.ok) {
     let message = r.message;
@@ -472,7 +516,7 @@ async function findEarliestAvailability(args = {}) {
     return { ok: false, error: r.error, message, data: r };
   }
   if (!r.found) {
-    const message = `I don't see any ${r.service.name} openings${winSuffix}${
+    const message = `I don't see any ${r.service.name} openings${cSuffix}${
       r.requestedStylist ? ` with ${r.requestedStylist}` : ''
     } in the next ${r.daysSearched} days.`;
     return { ok: true, message, data: r };
@@ -482,9 +526,9 @@ async function findEarliestAvailability(args = {}) {
   const e = r.earliest;
   let message;
   if (r.requestedStylist) {
-    message = `The soonest ${r.service.name}${winSuffix} with ${e.stylist} is ${when} at ${e.time}.`;
+    message = `The soonest ${r.service.name}${cSuffix} with ${e.stylist} is ${when} at ${e.time}.`;
   } else {
-    message = `The soonest ${r.service.name}${winSuffix} is ${when} at ${e.time} with ${e.stylistShort}.`;
+    message = `The soonest ${r.service.name}${cSuffix} is ${when} at ${e.time} with ${e.stylistShort}.`;
     const others = r.stylists
       .filter((s) => s.stylistIndex !== e.stylistIndex)
       .slice(0, 2)
@@ -502,4 +546,5 @@ module.exports = {
   rescheduleAppointment,
   findEarliestAvailability,
   parseClock,
+  parseWeekdays,
 };
