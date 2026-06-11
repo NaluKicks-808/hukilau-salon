@@ -19,7 +19,7 @@
 process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const moment = require('moment-timezone');
-const { getAvailability, findEarliest } = require('./src/availabilityEngine');
+const { getAvailability, findEarliest, findNextDays } = require('./src/availabilityEngine');
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
@@ -161,6 +161,27 @@ function requestedServiceNames(args) {
     .map((x) => String(x).trim());
 }
 
+// Build the customer record. lastName is OPTIONAL — we push for it in the prompt but never block a
+// booking on it; a caller who won't give a last name still gets captured (firstName + phone).
+function customerFrom(args) {
+  return {
+    firstName: args.firstName ? String(args.firstName).trim() : '',
+    lastName: args.lastName ? String(args.lastName).trim() : '',
+    phone: args.phone ? String(args.phone).trim() : '',
+    email: args.email ? String(args.email).trim() : null,
+  };
+}
+
+function fullName(c) {
+  return [c.firstName, c.lastName].filter(Boolean).join(' ') || c.firstName || 'the caller';
+}
+
+// "Saturday has 2:15 PM and 2:30 PM, and Sunday has 9:00 AM and 9:15 AM" — alternative days to offer
+// when the caller's requested day is full (from findNextDays).
+function speakNextDays(days) {
+  return speakList(days.map((d) => `${d.weekday} has ${speakSlots(d.stylists[0].slots, 2)}`));
+}
+
 // ---------- Tool 1: check_availability ----------
 
 async function checkAvailability(args = {}) {
@@ -192,6 +213,28 @@ async function checkAvailability(args = {}) {
 
   const when = `${r.weekday}, ${prettyDate(r.date)}`;
 
+  // When a requested day is full, proactively scan forward and offer the next open days, so the
+  // assistant never dead-ends with "what other day?" — it hands over real alternatives instead.
+  const nextDaysSuffix = async () => {
+    try {
+      const alt = await findNextDays(
+        {
+          service: args.service,
+          additionalServices: args.additionalServices,
+          stylist: args.stylist,
+          afterMin,
+          beforeMin,
+          fromDate: r.date,
+        },
+        2
+      );
+      if (alt.ok && alt.days && alt.days.length) return `, but ${speakNextDays(alt.days)}`;
+    } catch (_) {
+      /* alternatives are best-effort */
+    }
+    return '';
+  };
+
   if (requested) {
     const mine = r.stylists.find((s) => s.stylistIndex === requested.index);
     const others = r.stylists.filter((s) => s.stylistIndex !== requested.index);
@@ -205,7 +248,7 @@ async function checkAvailability(args = {}) {
         `${requested.full} doesn't have any ${r.service.name} openings${winSuffix} on ${when}, ` +
         `but ${others[0].stylistShort} does at ${speakSlots(others[0].slots, 3)}.`;
     } else {
-      message = `I don't see any ${r.service.name} openings${winSuffix} on ${when}.`;
+      message = `${requested.full} doesn't have any ${r.service.name} openings${winSuffix} on ${when}${await nextDaysSuffix()}.`;
     }
     return {
       ok: true,
@@ -216,7 +259,11 @@ async function checkAvailability(args = {}) {
 
   // Any stylist.
   if (!r.available) {
-    return { ok: true, message: `Sorry, I don't see any ${r.service.name} openings${winSuffix} on ${when}.`, data: r };
+    return {
+      ok: true,
+      message: `I don't see any ${r.service.name} openings${winSuffix} on ${when}${await nextDaysSuffix()}.`,
+      data: r,
+    };
   }
   const e = r.earliest;
   let message = `For a ${r.service.name}${winSuffix} on ${when}, the soonest is ${e.stylistShort} at ${e.time}.`;
@@ -231,7 +278,8 @@ async function checkAvailability(args = {}) {
 // ---------- Tool 2: book_appointment (capture + hand off to owner) ----------
 
 async function bookAppointment(args = {}) {
-  const required = ['firstName', 'lastName', 'phone', 'service', 'date', 'time'];
+  // lastName is intentionally NOT required — we encourage it in the prompt but never block on it.
+  const required = ['firstName', 'phone', 'service', 'date', 'time'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
   if (missing.length) {
     return {
@@ -272,12 +320,7 @@ async function bookAppointment(args = {}) {
         action: 'book',
         status: 'pending_owner_confirmation',
         offMenu: true,
-        customer: {
-          firstName: String(args.firstName).trim(),
-          lastName: String(args.lastName).trim(),
-          phone: String(args.phone).trim(),
-          email: args.email ? String(args.email).trim() : null,
-        },
+        customer: customerFrom(args),
         service: requestedServiceNames(args).join(' + ') || String(args.service).trim(),
         stylist: reqStylist ? reqStylist.full : args.stylist ? String(args.stylist).trim() : null,
         date: when.iso,
@@ -298,7 +341,7 @@ async function bookAppointment(args = {}) {
           stylistIndex: reqStylist.index,
           startMinutes: offMin,
           durationMinutes: 60,
-          meta: { name: `${booking.customer.firstName} ${booking.customer.lastName}`, service: booking.service, offMenu: true },
+          meta: { name: fullName(booking.customer), service: booking.service, offMenu: true },
         }).catch(() => {});
       }
       return {
@@ -342,12 +385,7 @@ async function bookAppointment(args = {}) {
 
   const booking = {
     status: 'pending_owner_confirmation',
-    customer: {
-      firstName: String(args.firstName).trim(),
-      lastName: String(args.lastName).trim(),
-      phone: String(args.phone).trim(),
-      email: args.email ? String(args.email).trim() : null,
-    },
+    customer: customerFrom(args),
     service: r.service.name,
     services: r.service.names,
     serviceIndex: r.service.index,
@@ -373,7 +411,7 @@ async function bookAppointment(args = {}) {
     stylistIndex: chosen.stylist.stylistIndex,
     startMinutes: chosen.slot.minutesIntoDay,
     durationMinutes: chosen.stylist.durationMinutes,
-    meta: { name: `${booking.customer.firstName} ${booking.customer.lastName}`, service: booking.service },
+    meta: { name: fullName(booking.customer), service: booking.service },
   }).catch(() => {});
 
   return {
@@ -397,7 +435,7 @@ function describeWhen(dateInput, timeInput) {
 }
 
 async function cancelAppointment(args = {}) {
-  const required = ['firstName', 'lastName', 'phone', 'date'];
+  const required = ['firstName', 'phone', 'date'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
   if (missing.length) {
     return {
@@ -413,12 +451,7 @@ async function cancelAppointment(args = {}) {
   const cancellation = {
     action: 'cancel',
     status: 'pending_owner_action',
-    customer: {
-      firstName: String(args.firstName).trim(),
-      lastName: String(args.lastName).trim(),
-      phone: String(args.phone).trim(),
-      email: args.email ? String(args.email).trim() : null,
-    },
+    customer: customerFrom(args),
     service: args.service ? String(args.service).trim() : null,
     stylist: requested ? requested.full : args.stylist ? String(args.stylist).trim() : null,
     date: when.iso,
@@ -438,7 +471,7 @@ async function cancelAppointment(args = {}) {
 }
 
 async function rescheduleAppointment(args = {}) {
-  const required = ['firstName', 'lastName', 'phone', 'newDate', 'newTime'];
+  const required = ['firstName', 'phone', 'newDate', 'newTime'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
   if (missing.length) {
     return {
@@ -511,12 +544,7 @@ async function rescheduleAppointment(args = {}) {
   const reschedule = {
     action: 'reschedule',
     status: 'pending_owner_action',
-    customer: {
-      firstName: String(args.firstName).trim(),
-      lastName: String(args.lastName).trim(),
-      phone: String(args.phone).trim(),
-      email: args.email ? String(args.email).trim() : null,
-    },
+    customer: customerFrom(args),
     service: serviceName,
     stylist: stylistName,
     fromWhen,
@@ -530,7 +558,7 @@ async function rescheduleAppointment(args = {}) {
   if (newHold) {
     await addHold({
       ...newHold,
-      meta: { name: `${reschedule.customer.firstName} ${reschedule.customer.lastName}`, action: 'reschedule' },
+      meta: { name: fullName(reschedule.customer), action: 'reschedule' },
     }).catch(() => {});
   }
 

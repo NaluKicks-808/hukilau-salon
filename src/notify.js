@@ -26,7 +26,8 @@ const MODE = process.env.NOTIFY_MODE || (telnyxConfigured() ? 'telnyx' : 'return
 
 function formatOwnerMessage(b) {
   const action = b.action || 'book';
-  const who = `${b.customer.firstName} ${b.customer.lastName} — ${b.customer.phone}`;
+  const name = [b.customer.firstName, b.customer.lastName].filter(Boolean).join(' ') || '(first name only)';
+  const who = `${name} — ${b.customer.phone}`;
   const svcStylist = [b.service, b.stylist].filter(Boolean).join(' with ');
   let lines;
 

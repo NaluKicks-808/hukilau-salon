@@ -314,6 +314,36 @@ async function runLive() {
     ok(!noSvc.ok && noSvc.error === 'missing_fields', 'price needs a service');
   }
 
+  section('LIVE: next-available-days fallback + optional last name');
+  {
+    const { findNextDays } = require('./src/availabilityEngine');
+    const nd = await findNextDays({ service: "women's cut & style" }, 3);
+    ok(nd.ok && Array.isArray(nd.days) && nd.days.length >= 1, `findNextDays returns upcoming open days (${nd.days.length})`);
+    ok(nd.days.every((d) => d.stylists && d.stylists.length), 'each returned day has open stylists');
+    const isos = nd.days.map((d) => d.date);
+    ok(isos.every((v, i) => i === 0 || v > isos[i - 1]), 'next days are in ascending date order');
+
+    // A stylist on a day BEFORE their soonest opening must offer an alternative, never dead-end.
+    const kelli = await tools.findEarliestAvailability({ service: "women's cut & style", stylist: 'Kelli' });
+    if (kelli.ok && kelli.data.found && kelli.data.daysAhead >= 2) {
+      const beforeIso = moment(kelli.data.date, 'YYYY-MM-DD').subtract(1, 'day').format('YYYY-MM-DD');
+      const ca = await tools.checkAvailability({ date: beforeIso, service: "women's cut & style", stylist: 'Kelli' });
+      ok(ca.ok && /\bbut\b/i.test(ca.message), 'an empty stylist-day offers an alternative, never a bare dead-end');
+      console.log('   ' + ca.message);
+    } else {
+      console.log('   (no far-out stylist day available to construct the dead-end case; skipped)');
+    }
+
+    // last name is optional: booking/cancel succeed without it and never render "undefined".
+    const noLast = await tools.bookAppointment({
+      firstName: 'Solo', phone: '8085551234', service, date: found.iso, time: r.data.earliest.time,
+    });
+    ok(noLast.ok, 'booking succeeds without a last name');
+    ok(!/undefined/.test(noLast.data.ownerMessage), 'owner message never shows "undefined" for a missing last name');
+    const cancelNoLast = await tools.cancelAppointment({ firstName: 'Solo', phone: '8085551234', date: found.iso });
+    ok(cancelNoLast.ok, 'cancel works without a last name');
+  }
+
   section('LIVE: cancel & reschedule are CAPTURE-ONLY too');
   {
     const cancelMissing = await tools.cancelAppointment({ firstName: 'Test' });

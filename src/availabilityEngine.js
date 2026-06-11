@@ -309,4 +309,70 @@ async function findEarliest(args) {
   };
 }
 
-module.exports = { getAvailability, findEarliest, loadAndConfigure, shapeStylists };
+/**
+ * Collect the next `count` days (from `fromDate`, default today) that have at least one opening
+ * for the service under the given time/day constraints. Used to offer alternatives when a caller's
+ * requested day is full ("Friday's out, but Saturday and Sunday have openings"). One fetch, scanned
+ * in memory — same machinery as findEarliest, just gathering several days instead of the first.
+ */
+async function findNextDays(args, count = 2) {
+  const data = await loadAndConfigure();
+  const tz = data.jsonMerchant.timezone;
+
+  const sel = resolveServiceSelection(args, data.serviceJSON);
+  if (!sel.ok) return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates };
+
+  const stylistRec = resolveStylist(args.stylist);
+  const employeeIndex = stylistRec ? stylistRec.index : null;
+  const window = windowFromArgs(args);
+  const dayFilter = dayFilterFromArgs(args);
+
+  const today = todayParts(tz);
+  let startMs = today.startMs;
+  if (args.fromDate) {
+    const fd = resolveDate(args.fromDate, tz);
+    if (fd && fd.startMs > startMs) startMs = fd.startMs;
+  }
+
+  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : 30;
+  daysToSearch = Math.min(daysToSearch, 45);
+  const maxDays = Math.floor((maxBookingMs(data.monthsx, tz) - startMs) / 86400000) + 1;
+  daysToSearch = Math.max(1, Math.min(daysToSearch, maxDays));
+
+  const appts = await getBookedAppointments(startMs, daysToSearch);
+  const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 6;
+
+  const days = [];
+  for (let i = 0; i < daysToSearch && days.length < count; i += 1) {
+    const m = moment.tz(startMs, tz).add(i, 'days');
+    if (dayFilter) {
+      const wd = m.day();
+      if (dayFilter.include && !dayFilter.include.includes(wd)) continue;
+      if (dayFilter.exclude && dayFilter.exclude.includes(wd)) continue;
+    }
+    const raw = core.computeAvailability({
+      apptJSON: appts,
+      year: m.year(),
+      month0: m.month(),
+      day: m.date(),
+      employeeIndex,
+      selectedServiceIndexes: sel.indexes,
+    });
+    const holds = await getHolds(m.format('YYYY-MM-DD'));
+    const { stylists, earliest } = shapeStylists(raw, cap, holds, window);
+    if (stylists.length) {
+      days.push({ date: m.format('YYYY-MM-DD'), weekday: m.format('dddd'), earliest, stylists });
+    }
+  }
+
+  return {
+    ok: true,
+    service: sel.info,
+    requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
+    window,
+    dayFilter,
+    days,
+  };
+}
+
+module.exports = { getAvailability, findEarliest, findNextDays, loadAndConfigure, shapeStylists };
