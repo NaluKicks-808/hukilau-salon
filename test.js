@@ -134,6 +134,28 @@ function runUnit() {
   const rs = resolveServices(["men's haircut", 'a blowout'], svc);
   ok(rs.matches.length === 2 && rs.unresolved.length === 0, 'resolveServices resolves two services (combo)');
   ok(resolveServices(["men's haircut", 'unicorn grooming'], svc).unresolved.length === 1, 'an unresolvable combo member is flagged');
+
+  section('owner notification — Notion mapping (unit)');
+  const { buildNotionProperties } = require('./src/notify');
+  const npBook = buildNotionProperties({
+    action: 'book',
+    customer: { firstName: 'Jane', lastName: '', phone: '8085551234' },
+    service: "Women's Cut & Style",
+    stylist: 'Patricia Maples',
+    when: 'Saturday, June 13 at 9:00 AM (HST)',
+  });
+  ok(npBook.Action.select.name === 'Book', 'Notion Action maps to Book');
+  ok(npBook.Name.title[0].text.content === 'Jane', 'Notion Name falls back to first name when last name is blank');
+  ok(npBook.Status.select.name === 'New', 'Notion Status defaults to New');
+  ok(npBook.Phone.phone_number === '8085551234', 'Notion Phone is set');
+  const npCancel = buildNotionProperties({
+    action: 'cancel',
+    customer: { firstName: 'Bob', lastName: 'Lee', phone: '8085550000' },
+    when: 'Friday',
+    reason: 'feeling sick',
+  });
+  ok(npCancel.Action.select.name === 'Cancel', 'cancel maps to the Cancel action');
+  ok(/feeling sick/.test(npCancel.Note.rich_text[0].text.content), 'cancel reason captured in Note');
 }
 
 // --------------------------------------------------------------------------- live (network)
