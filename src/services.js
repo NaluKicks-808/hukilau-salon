@@ -135,4 +135,27 @@ function resolveService(input, serviceJSON) {
   return { match: null, candidates };
 }
 
-module.exports = { resolveService, durationToMinutes, normalize };
+/**
+ * Resolve multiple service names for a combo appointment (e.g. cut + color). Returns the matched
+ * services and any that couldn't be resolved, so the caller can be asked to clarify.
+ * @returns {{ matches: object[], unresolved: {input:string, candidates:object[]}[] }}
+ */
+function resolveServices(names, serviceJSON) {
+  const matches = [];
+  const unresolved = [];
+  for (const n of names || []) {
+    if (!n || !String(n).trim()) continue;
+    const r = resolveService(n, serviceJSON);
+    if (r.match) matches.push(r.match);
+    else unresolved.push({ input: String(n).trim(), candidates: r.candidates });
+  }
+  return { matches, unresolved };
+}
+
+// Cents -> spoken dollar amount, dropping a trailing .00 ("$35", "$27.50").
+function formatPrice(cents) {
+  const dollars = (cents || 0) / 100;
+  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+}
+
+module.exports = { resolveService, resolveServices, durationToMinutes, normalize, formatPrice };

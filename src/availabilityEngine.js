@@ -12,7 +12,7 @@ const moment = require('moment-timezone');
 const { getSalonData, getBookedAppointments } = require('./salonClient');
 const core = require('../vendor/availability-core');
 const { resolveDate, todayParts, maxBookingMs } = require('./datetime');
-const { resolveService } = require('./services');
+const { resolveServices } = require('./services');
 const { resolveStylist, displayName, shortName } = require('./stylists');
 const { getHolds } = require('./pendingHolds');
 
@@ -43,6 +43,49 @@ function dayFilterFromArgs(args) {
   return { include: include.length ? include : null, exclude: exclude.length ? exclude : null };
 }
 
+// Join service names for a spoken combined label: "A", "A and B", "A, B, and C".
+function combineNames(names) {
+  if (names.length <= 1) return names[0] || '';
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+}
+
+// Resolve the primary service plus any additional services (a combo appointment) into one
+// descriptor the core treats as a single appointment (summed duration; only stylists who offer
+// ALL of them qualify). Returns { ok:false, error, message, candidates } or { ok:true, indexes, info }.
+function resolveServiceSelection(args, serviceJSON) {
+  const wanted = [args.service, ...(Array.isArray(args.additionalServices) ? args.additionalServices : [])].filter(
+    (x) => x && String(x).trim()
+  );
+  if (!wanted.length) {
+    return { ok: false, error: 'unknown_service', message: 'Which service are you looking for?', candidates: [] };
+  }
+  const { matches, unresolved } = resolveServices(wanted, serviceJSON);
+  if (unresolved.length || !matches.length) {
+    const u = unresolved[0] || { input: wanted[0], candidates: [] };
+    return {
+      ok: false,
+      error: 'unknown_service',
+      message: `I'm not sure which service you mean by "${u.input}".`,
+      candidates: u.candidates || [],
+    };
+  }
+  const names = matches.map((m) => m.name);
+  return {
+    ok: true,
+    indexes: matches.map((m) => m.index),
+    info: {
+      name: combineNames(names),
+      index: matches[0].index, // back-compat: callers that read a single .index
+      indexes: matches.map((m) => m.index),
+      names,
+      items: matches,
+      varies: matches.some((m) => m.varies),
+      priceCents: matches.reduce((sum, m) => sum + (m.priceCents || 0), 0),
+    },
+  };
+}
+
 /**
  * @param {object} args
  * @param {string} args.date     "YYYY-MM-DD" or natural language ("tomorrow")
@@ -71,14 +114,9 @@ async function getAvailability(args) {
     };
   }
 
-  const svc = resolveService(args.service, data.serviceJSON);
-  if (!svc.match) {
-    return {
-      ok: false,
-      error: 'unknown_service',
-      message: `I'm not sure which service you mean by "${args.service}".`,
-      candidates: svc.candidates,
-    };
+  const sel = resolveServiceSelection(args, data.serviceJSON);
+  if (!sel.ok) {
+    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates };
   }
 
   const stylistRec = resolveStylist(args.stylist);
@@ -92,7 +130,7 @@ async function getAvailability(args) {
     month0: d.month0,
     day: d.day,
     employeeIndex,
-    selectedServiceIndexes: [svc.match.index],
+    selectedServiceIndexes: sel.indexes,
   });
 
   const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 8;
@@ -105,7 +143,7 @@ async function getAvailability(args) {
     date: d.iso,
     weekday: d.weekday,
     timezone: tz,
-    service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
+    service: sel.info,
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
     anyStylist: employeeIndex == null,
     window,
@@ -190,14 +228,9 @@ async function findEarliest(args) {
   const data = await loadAndConfigure();
   const tz = data.jsonMerchant.timezone;
 
-  const svc = resolveService(args.service, data.serviceJSON);
-  if (!svc.match) {
-    return {
-      ok: false,
-      error: 'unknown_service',
-      message: `I'm not sure which service you mean by "${args.service}".`,
-      candidates: svc.candidates,
-    };
+  const sel = resolveServiceSelection(args, data.serviceJSON);
+  if (!sel.ok) {
+    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates };
   }
 
   const stylistRec = resolveStylist(args.stylist);
@@ -237,7 +270,7 @@ async function findEarliest(args) {
       month0: m.month(),
       day: m.date(),
       employeeIndex,
-      selectedServiceIndexes: [svc.match.index],
+      selectedServiceIndexes: sel.indexes,
     });
     const holds = await getHolds(m.format('YYYY-MM-DD'));
     const { stylists, earliest } = shapeStylists(raw, cap, holds, window);
@@ -251,7 +284,7 @@ async function findEarliest(args) {
         date: m.format('YYYY-MM-DD'),
         weekday: m.format('dddd'),
         timezone: tz,
-        service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
+        service: sel.info,
         requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
         anyStylist: employeeIndex == null,
         window,
@@ -266,11 +299,11 @@ async function findEarliest(args) {
     ok: true,
     found: false,
     daysSearched: daysToSearch,
-    service: { name: svc.match.name, index: svc.match.index },
+    service: sel.info,
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
     window,
     dayFilter,
-    message: `I don't see any ${svc.match.name} openings in the next ${daysToSearch} days${
+    message: `I don't see any ${sel.info.name} openings in the next ${daysToSearch} days${
       stylistRec ? ` with ${stylistRec.full}` : ''
     }.`,
   };

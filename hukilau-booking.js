@@ -23,6 +23,7 @@ const { getAvailability, findEarliest } = require('./src/availabilityEngine');
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
+const { resolveServices, formatPrice } = require('./src/services');
 const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
 
@@ -141,6 +142,25 @@ function dayPhrase(includeDays, excludeDays) {
   return '';
 }
 
+// Spoken approximate duration: 45 -> "45 minutes", 60 -> "an hour", 150 -> "2 and a half hours".
+function durationPhrase(min) {
+  if (!min || min < 1) return 'a few minutes';
+  if (min < 60) return `${min} minutes`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const hp = h === 1 ? 'an hour' : `${h} hours`;
+  if (m === 0) return hp;
+  if (m === 30) return h === 1 ? 'an hour and a half' : `${h} and a half hours`;
+  return `${hp} and ${m} minutes`;
+}
+
+// The requested service names (primary + any additional, for a combo) as trimmed strings.
+function requestedServiceNames(args) {
+  return [args.service, ...(Array.isArray(args.additionalServices) ? args.additionalServices : [])]
+    .filter((x) => x && String(x).trim())
+    .map((x) => String(x).trim());
+}
+
 // ---------- Tool 1: check_availability ----------
 
 async function checkAvailability(args = {}) {
@@ -155,6 +175,7 @@ async function checkAvailability(args = {}) {
   const r = await getAvailability({
     date: args.date,
     service: args.service,
+    additionalServices: args.additionalServices,
     stylist: '',
     afterMin,
     beforeMin,
@@ -234,7 +255,13 @@ async function bookAppointment(args = {}) {
   // Re-check availability right now (light double-book guard), across all stylists.
   // Validate against the FULL day's slots (high cap), not the 8-slot speech cap — otherwise a
   // genuinely-open later slot (e.g. 4 PM on a light day) gets wrongly rejected as unavailable.
-  const r = await getAvailability({ date: args.date, service: args.service, stylist: '', maxPerStylist: 500 });
+  const r = await getAvailability({
+    date: args.date,
+    service: args.service,
+    additionalServices: args.additionalServices,
+    stylist: '',
+    maxPerStylist: 500,
+  });
   if (!r.ok) {
     // Off-menu / custom service: don't turn callers away. Capture the request with a note and
     // let the salon confirm service, price, and time. (The date was already validated above.)
@@ -251,7 +278,7 @@ async function bookAppointment(args = {}) {
           phone: String(args.phone).trim(),
           email: args.email ? String(args.email).trim() : null,
         },
-        service: String(args.service).trim(),
+        service: requestedServiceNames(args).join(' + ') || String(args.service).trim(),
         stylist: reqStylist ? reqStylist.full : args.stylist ? String(args.stylist).trim() : null,
         date: when.iso,
         when: when.text,
@@ -322,7 +349,9 @@ async function bookAppointment(args = {}) {
       email: args.email ? String(args.email).trim() : null,
     },
     service: r.service.name,
+    services: r.service.names,
     serviceIndex: r.service.index,
+    serviceIndexes: r.service.indexes,
     stylist: chosen.stylist.stylist,
     stylistIndex: chosen.stylist.stylistIndex,
     date: r.date,
@@ -430,7 +459,13 @@ async function rescheduleAppointment(args = {}) {
   // If we know the service, verify the NEW slot is actually open (same guard as booking).
   if (serviceName) {
     // Full day's slots (high cap), not the speech cap — so a valid later slot isn't wrongly rejected.
-    const r = await getAvailability({ date: args.newDate, service: args.service, stylist: '', maxPerStylist: 500 });
+    const r = await getAvailability({
+      date: args.newDate,
+      service: args.service,
+      additionalServices: args.additionalServices,
+      stylist: '',
+      maxPerStylist: 500,
+    });
     if (!r.ok) {
       let message = r.message;
       if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
@@ -531,6 +566,7 @@ async function findEarliestAvailability(args = {}) {
 
   const r = await findEarliest({
     service: args.service,
+    additionalServices: args.additionalServices,
     stylist: args.stylist,
     fromDate: args.fromDate,
     daysToSearch: args.daysToSearch,
@@ -569,6 +605,76 @@ async function findEarliestAvailability(args = {}) {
   return { ok: true, message, data: r };
 }
 
+// ---------- Tool 6: get_service_info (price + duration quote) ----------
+
+// Build a spoken price/time answer for one or more services (a combo sums them).
+function priceMessage(items) {
+  const totalDur = items.reduce((s, m) => s + (m.durationMinutes || 0), 0);
+  const durText = durationPhrase(totalDur);
+  if (items.length === 1) {
+    const m = items[0];
+    if (m.varies) {
+      return `${m.name} is priced based on your hair, so your stylist gives you an exact quote at the appointment. It takes about ${durText}.`;
+    }
+    return `A ${m.name} is ${formatPrice(m.priceCents)} and takes about ${durText}.`;
+  }
+  // Combo: list each service's price, sum the fixed ones, and flag any that are priced in-salon.
+  const parts = items.map((m) =>
+    m.varies ? `${m.name}, which is priced in-salon` : `${m.name} at ${formatPrice(m.priceCents)}`
+  );
+  const fixedTotal = items.filter((m) => !m.varies).reduce((s, m) => s + m.priceCents, 0);
+  const totalText = items.some((m) => m.varies)
+    ? `that's ${formatPrice(fixedTotal)} plus the in-salon-priced part`
+    : `that's ${formatPrice(fixedTotal)} total`;
+  return `For ${speakList(parts)} — ${totalText}, about ${durText} altogether.`;
+}
+
+async function getServiceInfo(args = {}) {
+  const wanted = requestedServiceNames(args);
+  if (!wanted.length) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: 'Which service would you like the price for?',
+      data: { missing: ['service'] },
+    };
+  }
+  let data;
+  try {
+    data = await getSalonData();
+  } catch (_) {
+    return {
+      ok: false,
+      error: 'unavailable',
+      message: "I can't pull up pricing right this second — the salon can give you an exact quote.",
+      data: {},
+    };
+  }
+  const { matches, unresolved } = resolveServices(wanted, data.serviceJSON);
+  if (unresolved.length || !matches.length) {
+    const u = unresolved[0] || { input: wanted[0], candidates: [] };
+    let message = `I'm not sure which service you mean by "${u.input}".`;
+    if (u.candidates && u.candidates.length) message += ` Did you mean ${speakList(u.candidates.map((c) => c.name))}?`;
+    return { ok: false, error: 'unknown_service', message, data: { unresolved } };
+  }
+  return {
+    ok: true,
+    message: priceMessage(matches),
+    data: {
+      services: matches.map((m) => ({
+        name: m.name,
+        price: formatPrice(m.priceCents),
+        priceCents: m.priceCents,
+        durationMinutes: m.durationMinutes,
+        varies: m.varies,
+      })),
+      totalPriceCents: matches.filter((m) => !m.varies).reduce((s, m) => s + m.priceCents, 0),
+      totalDurationMinutes: matches.reduce((s, m) => s + (m.durationMinutes || 0), 0),
+      anyVaries: matches.some((m) => m.varies),
+    },
+  };
+}
+
 // parseClock is exported for unit tests.
 module.exports = {
   checkAvailability,
@@ -576,6 +682,7 @@ module.exports = {
   cancelAppointment,
   rescheduleAppointment,
   findEarliestAvailability,
+  getServiceInfo,
   parseClock,
   parseWeekdays,
 };

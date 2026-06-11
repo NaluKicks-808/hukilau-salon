@@ -32,6 +32,7 @@ const {
   cancelAppointment,
   rescheduleAppointment,
   findEarliestAvailability,
+  getServiceInfo,
 } = require('./hukilau-booking');
 const { getSalonData, prefetchAppointments } = require('./src/salonClient');
 
@@ -44,6 +45,7 @@ const TOOLS = {
   cancel_appointment: cancelAppointment,
   reschedule_appointment: rescheduleAppointment,
   find_earliest_availability: findEarliestAvailability,
+  get_service_info: getServiceInfo,
 };
 
 const app = express();
@@ -148,6 +150,7 @@ app.post('/vapi/book-appointment', (req, res) => handleToolRequest(req, res, 'bo
 app.post('/vapi/cancel-appointment', (req, res) => handleToolRequest(req, res, 'cancel_appointment'));
 app.post('/vapi/reschedule-appointment', (req, res) => handleToolRequest(req, res, 'reschedule_appointment'));
 app.post('/vapi/find-earliest', (req, res) => handleToolRequest(req, res, 'find_earliest_availability'));
+app.post('/vapi/service-info', (req, res) => handleToolRequest(req, res, 'get_service_info'));
 
 // Warm the caches (salon config + today..+2 days of appointments) to avoid cold-start lag.
 // Hit by the Vercel keep-warm cron; also usable as a manual ping.

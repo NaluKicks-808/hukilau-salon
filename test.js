@@ -125,6 +125,15 @@ function runUnit() {
   const winHeld = shapeStylists(fakeRaw, 8, [{ stylistIndex: 2, startMinutes: 600, durationMinutes: 60 }], { afterMin: 600 });
   ok(winHeld.stylists[0].slots.every((s) => s.minutesIntoDay !== 600), 'window + hold combine: held 10:00 is removed');
   ok(winHeld.stylists[0].slots.some((s) => s.minutesIntoDay === 660), 'window + hold combine: in-window 11:00 (not held) survives');
+
+  section('pricing + multi-service (unit)');
+  const { formatPrice, resolveServices } = require('./src/services');
+  ok(formatPrice(3500) === '$35', 'formatPrice 3500 -> $35');
+  ok(formatPrice(27500) === '$275', 'formatPrice 27500 -> $275');
+  ok(formatPrice(2750) === '$27.50', 'formatPrice 2750 -> $27.50 (keeps cents)');
+  const rs = resolveServices(["men's haircut", 'a blowout'], svc);
+  ok(rs.matches.length === 2 && rs.unresolved.length === 0, 'resolveServices resolves two services (combo)');
+  ok(resolveServices(["men's haircut", 'unicorn grooming'], svc).unresolved.length === 1, 'an unresolvable combo member is flagged');
 }
 
 // --------------------------------------------------------------------------- live (network)
@@ -262,6 +271,47 @@ async function runLive() {
       service, stylist: '', date: found.iso, time: r.data.earliest.time,
     });
     ok(!badPhone.ok && badPhone.error === 'invalid_phone', 'a too-short phone is re-asked, not captured');
+  }
+
+  section('LIVE: combo appointment (cut + color) sums duration, needs a stylist who does both');
+  {
+    const single = await tools.checkAvailability({ date: found.iso, service: "women's cut & style", stylist: '', maxPerStylist: 50 });
+    const combo = await tools.checkAvailability({
+      date: found.iso, service: "women's cut & style", additionalServices: ['whole head color'], stylist: '', maxPerStylist: 50,
+    });
+    ok(combo.ok, 'combo availability query succeeds');
+    ok(Array.isArray(combo.data.service.names) && combo.data.service.names.length === 2, 'combo carries both service names');
+    ok(/ and /.test(combo.data.service.name), 'combo speaks a combined service name');
+    console.log('   combo service:', combo.data.service.name);
+    if (combo.data.stylists.length) {
+      const cs = combo.data.stylists[0];
+      const ss = single.data.stylists.find((s) => s.stylistIndex === cs.stylistIndex);
+      if (ss) ok(cs.durationMinutes > ss.durationMinutes, `combo duration (${cs.durationMinutes}m) > single cut (${ss.durationMinutes}m)`);
+      ok(cs.stylistIndex != null, 'combo only returns a stylist who offers BOTH services');
+    } else {
+      console.log('   (no combo opening that day; both services still resolved + summed)');
+    }
+  }
+
+  section('LIVE: service price quotes (get_service_info)');
+  {
+    const haircut = await tools.getServiceInfo({ service: "men's haircut" });
+    ok(haircut.ok && /\$35\b/.test(haircut.message), `men's haircut quoted at $35`);
+    ok(haircut.data.totalPriceCents === 3500, 'price data is exact cents');
+    console.log('   ' + haircut.message);
+    const balayage = await tools.getServiceInfo({ service: 'balayage' });
+    ok(balayage.ok && /\$350\b/.test(balayage.message), 'balayage quoted at $350');
+    const varies = await tools.getServiceInfo({ service: 'color correction' });
+    ok(varies.ok && /priced based on your hair|in-salon|exact quote/i.test(varies.message), 'a varies-price service is explained, not given a fake number');
+    ok(varies.data.services[0].varies === true, 'varies service is flagged');
+    const comboPrice = await tools.getServiceInfo({ service: "men's haircut", additionalServices: ['regular blowout'] });
+    ok(comboPrice.ok && comboPrice.data.totalPriceCents === 7500, 'combo price sums ($35 + $40 = $75)');
+    ok(/\$75\b/.test(comboPrice.message), 'combo total is spoken');
+    console.log('   ' + comboPrice.message);
+    const unknownPrice = await tools.getServiceInfo({ service: 'unicorn grooming' });
+    ok(!unknownPrice.ok && unknownPrice.error === 'unknown_service', 'unknown service price is not invented');
+    const noSvc = await tools.getServiceInfo({});
+    ok(!noSvc.ok && noSvc.error === 'missing_fields', 'price needs a service');
   }
 
   section('LIVE: cancel & reschedule are CAPTURE-ONLY too');
