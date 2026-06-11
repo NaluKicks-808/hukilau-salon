@@ -22,6 +22,16 @@ async function loadAndConfigure() {
   return data;
 }
 
+// Build a {afterMin, beforeMin} time-of-day window from pre-parsed numeric minutes-into-day
+// (the tool layer parses caller phrases like "after 2 PM" into numbers). Returns null if neither
+// bound is set. Enforcing the window here — not in the model — is the whole point: the assistant
+// cannot be trusted to filter times itself (it once offered 9 AM for an "after 2 PM" request).
+function windowFromArgs(args) {
+  const afterMin = Number.isFinite(args.afterMin) ? args.afterMin : null;
+  const beforeMin = Number.isFinite(args.beforeMin) ? args.beforeMin : null;
+  return afterMin != null || beforeMin != null ? { afterMin, beforeMin } : null;
+}
+
 /**
  * @param {object} args
  * @param {string} args.date     "YYYY-MM-DD" or natural language ("tomorrow")
@@ -76,7 +86,8 @@ async function getAvailability(args) {
 
   const cap = Number(args.maxPerStylist) > 0 ? Number(args.maxPerStylist) : 8;
   const holds = await getHolds(d.iso);
-  const { stylists, earliest } = shapeStylists(raw, cap, holds);
+  const window = windowFromArgs(args);
+  const { stylists, earliest } = shapeStylists(raw, cap, holds, window);
 
   return {
     ok: true,
@@ -86,6 +97,7 @@ async function getAvailability(args) {
     service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
     anyStylist: employeeIndex == null,
+    window,
     available: stylists.length > 0,
     earliest,
     stylists,
@@ -96,10 +108,22 @@ async function getAvailability(args) {
 // `holds` (pending bookings not yet in the salon calendar) are subtracted so the next caller
 // can't see a slot the AI just booked. A candidate slot is dropped if the service's footprint
 // [start, start+duration) overlaps any hold for that stylist.
-function shapeStylists(raw, cap = 8, holds = []) {
+function shapeStylists(raw, cap = 8, holds = [], window = null) {
+  const afterMin = window && Number.isFinite(window.afterMin) ? window.afterMin : null;
+  const beforeMin = window && Number.isFinite(window.beforeMin) ? window.beforeMin : null;
   const stylists = raw
     .map((r) => {
       let open = r.slots;
+      // Time-of-day window (e.g. caller asked for "after 2 PM"). Drop slots whose start time
+      // falls outside [afterMin, beforeMin]. Applied before holds; both are just filters.
+      if (afterMin != null || beforeMin != null) {
+        open = open.filter((slot) => {
+          const t = slot.minutesIntoDay;
+          if (afterMin != null && t < afterMin) return false;
+          if (beforeMin != null && t > beforeMin) return false;
+          return true;
+        });
+      }
       const myHolds = (holds || []).filter((h) => h.stylistIndex === r.employeeIndex);
       if (myHolds.length) {
         const dur = r.durationMin || 0;
@@ -167,6 +191,7 @@ async function findEarliest(args) {
 
   const stylistRec = resolveStylist(args.stylist);
   const employeeIndex = stylistRec ? stylistRec.index : null;
+  const window = windowFromArgs(args);
 
   const today = todayParts(tz);
   let startMs = today.startMs;
@@ -175,8 +200,10 @@ async function findEarliest(args) {
     if (fd && fd.startMs > startMs) startMs = fd.startMs;
   }
 
-  // Window to scan, clamped to the salon's booking window (monthsx).
-  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : 14;
+  // Window of days to scan, clamped to the salon's booking window (monthsx). A time-of-day
+  // constraint can push the first match well past the default 14 days (afternoons fill up), so
+  // scan further by default when one is set — it's all in-memory off a single fetch.
+  let daysToSearch = Number(args.daysToSearch) > 0 ? Number(args.daysToSearch) : window ? 30 : 14;
   daysToSearch = Math.min(daysToSearch, 45);
   const maxDays = Math.floor((maxBookingMs(data.monthsx, tz) - startMs) / 86400000) + 1;
   daysToSearch = Math.max(1, Math.min(daysToSearch, maxDays));
@@ -196,7 +223,9 @@ async function findEarliest(args) {
       selectedServiceIndexes: [svc.match.index],
     });
     const holds = await getHolds(m.format('YYYY-MM-DD'));
-    const { stylists, earliest } = shapeStylists(raw, cap, holds);
+    const { stylists, earliest } = shapeStylists(raw, cap, holds, window);
+    // A day with no in-window openings yields zero stylists, so the scan simply rolls to the
+    // next day — that's the automatic "search forward to the first matching slot" behavior.
     if (stylists.length) {
       return {
         ok: true,
@@ -208,6 +237,7 @@ async function findEarliest(args) {
         service: { name: svc.match.name, index: svc.match.index, varies: svc.match.varies },
         requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
         anyStylist: employeeIndex == null,
+        window,
         earliest,
         stylists,
       };
@@ -220,6 +250,7 @@ async function findEarliest(args) {
     daysSearched: daysToSearch,
     service: { name: svc.match.name, index: svc.match.index },
     requestedStylist: stylistRec ? displayName(stylistRec.index) : null,
+    window,
     message: `I don't see any ${svc.match.name} openings in the next ${daysToSearch} days${
       stylistRec ? ` with ${stylistRec.full}` : ''
     }.`,

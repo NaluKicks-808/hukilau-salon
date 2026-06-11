@@ -96,6 +96,25 @@ function runUnit() {
     shapeStylists(fakeRaw, 8, [{ stylistIndex: 0, startMinutes: 540, durationMinutes: 60 }]).stylists[0].slots.length === 3,
     "a hold for a different stylist doesn't affect this one"
   );
+
+  section('time-of-day window (unit)');
+  ok(
+    shapeStylists(fakeRaw, 8, [], { afterMin: 600 }).stylists[0].slots.every((s) => s.minutesIntoDay >= 600),
+    'afterMin 600 keeps only slots at/after 10:00'
+  );
+  ok(shapeStylists(fakeRaw, 8, [], { afterMin: 600 }).stylists[0].slots.length === 2, 'afterMin 600 -> 2 slots (10:00, 11:00)');
+  ok(
+    shapeStylists(fakeRaw, 8, [], { beforeMin: 600 }).stylists[0].slots.every((s) => s.minutesIntoDay <= 600),
+    'beforeMin 600 keeps only slots at/before 10:00'
+  );
+  ok(shapeStylists(fakeRaw, 8, [], { afterMin: 600, beforeMin: 600 }).stylists[0].slots.length === 1, 'after & before 600 -> just 10:00');
+  ok(
+    shapeStylists(fakeRaw, 8, [], { afterMin: 900 }).stylists.length === 0,
+    'afterMin past all slots -> stylist drops out (so a forward scan rolls to the next day)'
+  );
+  const winHeld = shapeStylists(fakeRaw, 8, [{ stylistIndex: 2, startMinutes: 600, durationMinutes: 60 }], { afterMin: 600 });
+  ok(winHeld.stylists[0].slots.every((s) => s.minutesIntoDay !== 600), 'window + hold combine: held 10:00 is removed');
+  ok(winHeld.stylists[0].slots.some((s) => s.minutesIntoDay === 660), 'window + hold combine: in-window 11:00 (not held) survives');
 }
 
 // --------------------------------------------------------------------------- live (network)
@@ -135,6 +154,25 @@ async function runLive() {
   const minStart = Math.min(...r.data.stylists.map((s) => s.firstSlotMinutes));
   const earliestStylist = r.data.stylists.find((s) => s.stylistIndex === r.data.earliest.stylistIndex);
   ok(earliestStylist.firstSlotMinutes === minStart, 'earliest is the soonest across all stylists');
+
+  section('LIVE: time-of-day constraint is enforced server-side (the failed-call fix)');
+  {
+    const cutoff = 780; // 1:00 PM
+    // Compare a windowed query against the full day's slots, manually filtered. High per-stylist
+    // cap on both calls so the display cap can't skew the comparison.
+    const full = await tools.checkAvailability({ date: found.iso, service, stylist: '', maxPerStylist: 50 });
+    const win = await tools.checkAvailability({ date: found.iso, service, stylist: '', afterTime: '1:00 PM', maxPerStylist: 50 });
+    const fullAfter = full.data.stylists
+      .flatMap((s) => s.slots.map((x) => x.minutesIntoDay))
+      .filter((m) => m >= cutoff)
+      .sort((a, b) => a - b);
+    const winSlots = win.data.stylists.flatMap((s) => s.slots.map((x) => x.minutesIntoDay)).sort((a, b) => a - b);
+    ok(win.ok, 'check_availability accepts an afterTime constraint');
+    ok(winSlots.every((m) => m >= cutoff), 'every returned slot is at/after 1:00 PM');
+    ok(!winSlots.some((m) => m < cutoff), 'NEVER offers a time before the requested cutoff (the exact bug)');
+    ok(JSON.stringify(winSlots) === JSON.stringify(fullAfter), `windowed slots equal the day's afternoon slots (${winSlots.length})`);
+    console.log('   ' + win.message);
+  }
 
   section('LIVE: specific-stylist + unknown-service handling');
   const one = await tools.checkAvailability({ date: found.iso, service, stylist: r.data.earliest.stylist });
@@ -263,6 +301,17 @@ async function runLive() {
 
     const missingSvc = await tools.findEarliestAvailability({});
     ok(!missingSvc.ok && missingSvc.error === 'missing_fields', 'find_earliest requires a service');
+
+    // The exact failed call: "men's haircut, soonest, after 2 PM" must never return a morning slot.
+    const afterPM = await tools.findEarliestAvailability({ service: "men's haircut", afterTime: '2:00 PM' });
+    ok(afterPM.ok, 'find_earliest accepts an afterTime constraint');
+    ok(/after 2 PM/i.test(afterPM.message), 'spoken answer states the constraint ("after 2 PM")');
+    if (afterPM.data && afterPM.data.found) {
+      const slots = (afterPM.data.stylists || []).flatMap((s) => s.slots.map((x) => x.minutesIntoDay));
+      ok(slots.every((m) => m >= 840), 'every returned slot is at/after 2:00 PM');
+      ok(tools.parseClock(afterPM.data.earliest.time) >= 840, 'the announced earliest time is itself at/after 2:00 PM');
+    }
+    console.log('   ' + afterPM.message);
   }
 }
 

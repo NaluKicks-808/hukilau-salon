@@ -81,13 +81,40 @@ function parseClock(input) {
   return h * 60 + min;
 }
 
+// Format minutes-into-day for speech: 840 -> "2 PM", 855 -> "2:15 PM".
+function clockLabel(mins) {
+  const m = moment().startOf('day').add(mins, 'minutes');
+  return m.minute() === 0 ? m.format('h A') : m.format('h:mm A');
+}
+
+// Spoken phrase for a time-of-day constraint, or '' if none.
+// e.g. "after 2 PM", "before 12 PM", "between 2 PM and 5 PM".
+function windowPhrase(afterMin, beforeMin) {
+  if (afterMin != null && beforeMin != null) return `between ${clockLabel(afterMin)} and ${clockLabel(beforeMin)}`;
+  if (afterMin != null) return `after ${clockLabel(afterMin)}`;
+  if (beforeMin != null) return `before ${clockLabel(beforeMin)}`;
+  return '';
+}
+
 // ---------- Tool 1: check_availability ----------
 
 async function checkAvailability(args = {}) {
   const requested = resolveStylist(args.stylist);
+  // Time-of-day constraint ("after 2 PM"), parsed to minutes and enforced server-side.
+  const afterMin = parseClock(args.afterTime);
+  const beforeMin = parseClock(args.beforeTime);
+  const win = windowPhrase(afterMin, beforeMin);
+  const winSuffix = win ? ` ${win}` : '';
 
   // One live read across ALL stylists, then highlight/partition by the requested stylist.
-  const r = await getAvailability({ date: args.date, service: args.service, stylist: '' });
+  const r = await getAvailability({
+    date: args.date,
+    service: args.service,
+    stylist: '',
+    afterMin,
+    beforeMin,
+    maxPerStylist: args.maxPerStylist,
+  });
 
   if (!r.ok) {
     let message = r.message;
@@ -104,15 +131,15 @@ async function checkAvailability(args = {}) {
     const others = r.stylists.filter((s) => s.stylistIndex !== requested.index);
     let message;
     if (mine) {
-      message = `Yes — ${requested.full} can do a ${r.service.name} on ${when}. Open times: ${speakSlots(
+      message = `Yes — ${requested.full} can do a ${r.service.name}${winSuffix} on ${when}. Open times: ${speakSlots(
         mine.slots
       )}.`;
     } else if (others.length) {
       message =
-        `${requested.full} doesn't have any ${r.service.name} openings on ${when}, ` +
+        `${requested.full} doesn't have any ${r.service.name} openings${winSuffix} on ${when}, ` +
         `but ${others[0].stylistShort} does at ${speakSlots(others[0].slots, 3)}.`;
     } else {
-      message = `I don't see any ${r.service.name} openings on ${when}.`;
+      message = `I don't see any ${r.service.name} openings${winSuffix} on ${when}.`;
     }
     return {
       ok: true,
@@ -123,10 +150,10 @@ async function checkAvailability(args = {}) {
 
   // Any stylist.
   if (!r.available) {
-    return { ok: true, message: `Sorry, I don't see any ${r.service.name} openings on ${when}.`, data: r };
+    return { ok: true, message: `Sorry, I don't see any ${r.service.name} openings${winSuffix} on ${when}.`, data: r };
   }
   const e = r.earliest;
-  let message = `For a ${r.service.name} on ${when}, the soonest is ${e.stylistShort} at ${e.time}.`;
+  let message = `For a ${r.service.name}${winSuffix} on ${when}, the soonest is ${e.stylistShort} at ${e.time}.`;
   const extras = r.stylists
     .filter((s) => s.stylistIndex !== e.stylistIndex)
     .slice(0, 2)
@@ -422,11 +449,20 @@ async function findEarliestAvailability(args = {}) {
       data: { missing: ['service'] },
     };
   }
+  // Time-of-day constraint ("after 2 PM"), parsed to minutes and enforced server-side. The
+  // engine scans forward day by day and returns the first slot that actually satisfies it.
+  const afterMin = parseClock(args.afterTime);
+  const beforeMin = parseClock(args.beforeTime);
+  const win = windowPhrase(afterMin, beforeMin);
+  const winSuffix = win ? ` ${win}` : '';
+
   const r = await findEarliest({
     service: args.service,
     stylist: args.stylist,
     fromDate: args.fromDate,
     daysToSearch: args.daysToSearch,
+    afterMin,
+    beforeMin,
   });
   if (!r.ok) {
     let message = r.message;
@@ -436,16 +472,19 @@ async function findEarliestAvailability(args = {}) {
     return { ok: false, error: r.error, message, data: r };
   }
   if (!r.found) {
-    return { ok: true, message: r.message, data: r };
+    const message = `I don't see any ${r.service.name} openings${winSuffix}${
+      r.requestedStylist ? ` with ${r.requestedStylist}` : ''
+    } in the next ${r.daysSearched} days.`;
+    return { ok: true, message, data: r };
   }
 
   const when = `${r.weekday}, ${prettyDate(r.date)}`;
   const e = r.earliest;
   let message;
   if (r.requestedStylist) {
-    message = `The soonest ${r.service.name} with ${e.stylist} is ${when} at ${e.time}.`;
+    message = `The soonest ${r.service.name}${winSuffix} with ${e.stylist} is ${when} at ${e.time}.`;
   } else {
-    message = `The soonest ${r.service.name} is ${when} at ${e.time} with ${e.stylistShort}.`;
+    message = `The soonest ${r.service.name}${winSuffix} is ${when} at ${e.time} with ${e.stylistShort}.`;
     const others = r.stylists
       .filter((s) => s.stylistIndex !== e.stylistIndex)
       .slice(0, 2)
