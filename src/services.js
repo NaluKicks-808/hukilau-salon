@@ -86,6 +86,10 @@ const STOPWORDS = new Set([
   'a', 'an', 'the', 'and', 'or', 'of', 'for', 'to', 'with', 'my', 'your', 'please',
   'up', 'some', 'i', 'id', 'need', 'want', 'get', 'got', 'book', 'booking', 'schedule',
   'appointment', 'appt', 'like', 'would', 'can', 'could', 'do', 'have',
+  // Fragment fillers in follow-up answers ("just a cut", "only the cut", "plain trim"). Safe:
+  // no service name contains these. ("regular"/"no" are intentionally NOT here — they appear in
+  // "Regular Blowout" / "Gray Retouch No Blowdry".)
+  'just', 'only', 'plain', 'simple',
 ]);
 
 function tokenize(s) {
@@ -188,10 +192,74 @@ function resolveServices(names, serviceJSON) {
   return { matches, unresolved };
 }
 
+/**
+ * Narrow a caller's follow-up fragment ("just a cut", "the one with style", "no style", "women's")
+ * to ONE of a small set of options the assistant ALREADY offered. This is the dialog-state fix:
+ * resolve_service is stateless, so when the assistant has asked "Women's Cut or Women's Cut & Style?"
+ * and the caller replies with a fragment, it re-calls resolve_service with `among` = those options.
+ * We then pick deterministically instead of the model restarting the whole men/women/kids question.
+ *
+ * Returns `narrowed:false` when the fragment doesn't match ANY offered option (e.g. the caller
+ * changed their mind — "actually, men's") so the caller can fall back to full-menu resolution.
+ *
+ * @param {string} phrase
+ * @param {string[]} amongNames  the option names just offered to the caller
+ * @param {Array} serviceJSON
+ * @returns {{match:object|null, candidates:{index:number,name:string}[], ambiguous:boolean, narrowed:boolean}}
+ */
+function resolveAmong(phrase, amongNames, serviceJSON) {
+  const miss = { match: null, candidates: [], ambiguous: false, narrowed: false };
+  // Resolve each offered option to a real menu service (keeps posID/duration), de-duped.
+  const options = [];
+  const seen = new Set();
+  for (const nm of amongNames || []) {
+    const r = resolveService(nm, serviceJSON);
+    if (r.match && !seen.has(r.match.index)) {
+      seen.add(r.match.index);
+      options.push(r.match);
+    }
+  }
+  if (options.length < 2) return miss; // nothing meaningful to narrow between
+
+  const q = normalize(phrase);
+  const qTokens = tokenize(q);
+  const hasStyle = (o) => /\bstyle\b/.test(normalize(o.name));
+  // "no style"/"without style" must win over the bare "style" token they contain.
+  const noStyle = /\bno\s+style\b|\bwithout\s+style\b/.test(q);
+  const mentionsStyle = !noStyle && (qTokens.includes('style') || /\bstyle\b|\bblow\s?dr|\bblowout\b/.test(q));
+  // "just/only/plain/simple" already strip to nothing-but-the-core via STOPWORDS, so also treat a
+  // fragment that reduced to a bare core word (e.g. "just a cut" -> ["cut"]) as a plain request.
+  const wantsPlain = noStyle || (!mentionsStyle && /\b(just|only|plain|simple)\b/.test(q));
+  const done = (o) => ({ match: o, candidates: [{ index: o.index, name: o.name }], ambiguous: false, narrowed: true });
+
+  // Explicit style preference resolves the classic "Cut vs Cut & Style" fork outright.
+  if (mentionsStyle) {
+    const styled = options.filter(hasStyle);
+    if (styled.length === 1) return done(styled[0]);
+  }
+  if (wantsPlain) {
+    const plain = options
+      .filter((o) => !hasStyle(o))
+      .sort((a, b) => tokenize(normalize(a.name)).length - tokenize(normalize(b.name)).length);
+    if (plain.length) return done(plain[0]);
+  }
+
+  // Otherwise score the fragment against ONLY the offered options.
+  const ranked = options
+    .map((o) => ({ o, sc: score(qTokens, tokenize(normalize(o.name))) }))
+    .sort((a, b) => b.sc - a.sc);
+  const best = ranked[0];
+  const second = ranked[1];
+  if (!best || best.sc < 2) return miss; // fragment matches none of the options -> fall through
+  if (!second || best.sc - second.sc >= 0.25) return done(best.o);
+  // Real overlap but still tied -> repeat the choice, but ONLY among the offered options.
+  return { match: null, candidates: options.map((o) => ({ index: o.index, name: o.name })), ambiguous: true, narrowed: true };
+}
+
 // Cents -> spoken dollar amount, dropping a trailing .00 ("$35", "$27.50").
 function formatPrice(cents) {
   const dollars = (cents || 0) / 100;
   return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
 }
 
-module.exports = { resolveService, resolveServices, durationToMinutes, normalize, formatPrice };
+module.exports = { resolveService, resolveServices, resolveAmong, durationToMinutes, normalize, formatPrice };

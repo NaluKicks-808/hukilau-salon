@@ -23,7 +23,7 @@ const { getAvailability, findEarliest, findNextDays } = require('./src/availabil
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
 const { resolveStylist } = require('./src/stylists');
-const { resolveServices, formatPrice } = require('./src/services');
+const { resolveServices, resolveAmong, formatPrice } = require('./src/services');
 const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
 
@@ -46,6 +46,14 @@ function speakOr(items) {
   if (items.length === 1) return items[0];
   if (items.length === 2) return `${items[0]} or ${items[1]}`;
   return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
+}
+
+// Normalize the optional `among` arg (previously-offered options) to a string[]. Accepts an array
+// or a single string the assistant might pass verbatim ("Women's Cut or Women's Cut & Style").
+function parseAmong(v) {
+  if (!v) return [];
+  const arr = Array.isArray(v) ? v : String(v).split(/\bor\b|,|\//gi);
+  return arr.map((x) => String(x).trim()).filter(Boolean);
 }
 
 function prettyDate(iso) {
@@ -742,6 +750,26 @@ async function resolveServicePhrase(args = {}) {
   } catch (_) {
     return { ok: false, error: 'unavailable', message: "I can't pull up our service list right this second — the salon can confirm the exact service.", data: {} };
   }
+
+  // Dialog-state narrowing: when the assistant has already offered a choice and the caller answers
+  // with a fragment ("just a cut", "the one with style", "women's"), it re-calls with `among` set to
+  // the options it just offered. We pick deterministically so the flow never restarts. A non-match
+  // (caller changed their mind) falls through to normal full-menu resolution below.
+  const among = parseAmong(args.among || args.options || args.choices || args.narrowTo);
+  if (among.length >= 2) {
+    const a = resolveAmong(phrase, among, data.serviceJSON);
+    if (a.narrowed && a.match) {
+      return { ok: true, message: a.match.name, data: { resolved: true, canonical: a.match.name, narrowed: true } };
+    }
+    if (a.narrowed && a.ambiguous && a.candidates.length) {
+      return {
+        ok: true,
+        message: `Did you mean ${speakOr(a.candidates.map((c) => c.name))}?`,
+        data: { resolved: false, ambiguous: true, narrowed: true, candidates: a.candidates },
+      };
+    }
+  }
+
   const { matches, unresolved } = resolveServices([phrase], data.serviceJSON);
   if (matches.length) {
     // Exact/aliased match — hand back the canonical menu name for the assistant to use as-is.

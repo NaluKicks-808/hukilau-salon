@@ -14,7 +14,7 @@
 process.env.TZ = process.env.TZ || process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const moment = require('moment-timezone');
-const { resolveService } = require('./src/services');
+const { resolveService, resolveAmong } = require('./src/services');
 const { resolveStylist } = require('./src/stylists');
 const { resolveDate, todayParts } = require('./src/datetime');
 const tools = require('./hukilau-booking');
@@ -80,6 +80,22 @@ function runUnit() {
     !(rootR.candidates || []).some((c) => c.name === 'Make-up' || c.name === "Up Do's"),
     '"root touch up" never offers Make-up / Up Do\'s as candidates'
   );
+
+  // Dialog-state narrowing (resolveAmong): a fragment answer to a "Women's Cut vs Women's Cut &
+  // Style?" question must map to ONE option, not restart the men/women/kids question.
+  const womensSvc = [
+    { name: "Women's Cut", posID: 'WC', duration: '00:45:00', price: 5000 },
+    { name: "Women's Cut & Style", posID: 'WCS', duration: '01:00:00', price: 6500 },
+    { name: "Men's Haircut", posID: 'MH', duration: '00:45:00', price: 3500 },
+    { name: "Kid's Haircut", posID: 'KH', duration: '00:30:00', price: 2500 },
+  ];
+  const offered = ["Women's Cut", "Women's Cut & Style"];
+  ok(resolveAmong('just a cut', offered, womensSvc).match?.name === "Women's Cut", '"just a cut" within women\'s options -> Women\'s Cut');
+  ok(resolveAmong('no style', offered, womensSvc).match?.name === "Women's Cut", '"no style" -> Women\'s Cut');
+  ok(resolveAmong('with style', offered, womensSvc).match?.name === "Women's Cut & Style", '"with style" -> Women\'s Cut & Style');
+  ok(resolveAmong('cut and style', offered, womensSvc).match?.name === "Women's Cut & Style", '"cut and style" -> styled variant');
+  ok(resolveAmong("actually men's", offered, womensSvc).narrowed === false, '"actually men\'s" falls through (not forced into a women\'s option)');
+  ok(resolveAmong('just a cut', ["Women's Cut"], womensSvc).narrowed === false, 'narrowing needs 2+ real options');
 
   section('stylists (alias / any)');
   ok(resolveStylist('trish')?.index === 2, 'alias: trish -> Patricia (2)');
@@ -389,6 +405,12 @@ async function runLive() {
     const noSvc = await tools.resolveServicePhrase({});
     ok(!noSvc.ok && noSvc.error === 'missing_fields', 'resolve_service needs a phrase');
     console.log('   ' + amb.message);
+
+    // Dialog-state: caller answers the prior "Women's Cut vs Women's Cut & Style?" with a fragment.
+    const narrowed = await tools.resolveServicePhrase({ service: 'just a cut', among: ["Women's Cut", "Women's Cut & Style"] });
+    ok(narrowed.ok && narrowed.message === "Women's Cut" && narrowed.data.narrowed === true, '"just a cut" + among -> Women\'s Cut (no restart)');
+    const narrowedStyle = await tools.resolveServicePhrase({ service: 'with style', among: ["Women's Cut", "Women's Cut & Style"] });
+    ok(narrowedStyle.ok && narrowedStyle.message === "Women's Cut & Style", '"with style" + among -> Women\'s Cut & Style');
   }
 
   section('LIVE: next-available-days fallback + optional last name');
