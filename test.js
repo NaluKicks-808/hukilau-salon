@@ -96,6 +96,12 @@ function runUnit() {
   ok(resolveAmong('cut and style', offered, womensSvc).match?.name === "Women's Cut & Style", '"cut and style" -> styled variant');
   ok(resolveAmong("actually men's", offered, womensSvc).narrowed === false, '"actually men\'s" falls through (not forced into a women\'s option)');
   ok(resolveAmong('just a cut', ["Women's Cut"], womensSvc).narrowed === false, 'narrowing needs 2+ real options');
+  // Positional answers (no service token at all) must map by the order the options were offered.
+  ok(resolveAmong('the first one', offered, womensSvc).match?.name === "Women's Cut", '"the first one" -> first offered option');
+  ok(resolveAmong('the second one', offered, womensSvc).match?.name === "Women's Cut & Style", '"the second one" -> second offered option');
+  ok(resolveAmong('the last one', offered, womensSvc).match?.name === "Women's Cut & Style", '"the last one" -> last offered option');
+  ok(resolveAmong('just the second one', offered, womensSvc).match?.name === "Women's Cut & Style", '"just the second one" -> #2 (ordinal beats "just"->plain)');
+  ok(resolveAmong('either is fine', offered, womensSvc).match?.name === "Women's Cut", '"either" -> first offered (keeps the flow moving)');
 
   section('stylists (alias / any)');
   ok(resolveStylist('trish')?.index === 2, 'alias: trish -> Patricia (2)');
@@ -411,6 +417,9 @@ async function runLive() {
     ok(narrowed.ok && narrowed.message === "Women's Cut" && narrowed.data.narrowed === true, '"just a cut" + among -> Women\'s Cut (no restart)');
     const narrowedStyle = await tools.resolveServicePhrase({ service: 'with style', among: ["Women's Cut", "Women's Cut & Style"] });
     ok(narrowedStyle.ok && narrowedStyle.message === "Women's Cut & Style", '"with style" + among -> Women\'s Cut & Style');
+    // Positional answer ("the first one") — the exact fragment that failed in live session 95bec173.
+    const narrowedFirst = await tools.resolveServicePhrase({ service: 'the first one', among: ["Women's Cut", "Women's Cut & Style"] });
+    ok(narrowedFirst.ok && narrowedFirst.message === "Women's Cut" && narrowedFirst.data.narrowed === true, '"the first one" + among -> Women\'s Cut');
   }
 
   section('LIVE: next-available-days fallback + optional last name');

@@ -48,6 +48,9 @@ const TOOLS = {
   find_earliest_availability: findEarliestAvailability,
   get_service_info: getServiceInfo,
   resolve_service: resolveServicePhrase,
+  // Same handler — a dedicated tool whose schema makes `among` REQUIRED, so the model can't drop it
+  // when answering a "did you mean …?" question (an optional param it kept omitting on fragments).
+  resolve_service_among: resolveServicePhrase,
 };
 
 const app = express();

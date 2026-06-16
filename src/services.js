@@ -192,6 +192,19 @@ function resolveServices(names, serviceJSON) {
   return { matches, unresolved };
 }
 
+// Map a positional answer ("the first one", "second", "the last one", "either") to an index into the
+// offered options (in the order they were spoken). Returns null when the phrase isn't positional.
+// This is essential because positional answers carry NO service token to score against.
+function ordinalIndex(q, n) {
+  if (/\b(first|1st|former|number one|option one)\b/.test(q)) return 0;
+  if (/\b(second|2nd|latter|number two|option two)\b/.test(q)) return n >= 2 ? 1 : null;
+  if (/\b(third|3rd|number three|option three)\b/.test(q)) return n >= 3 ? 2 : null;
+  if (/\b(last|final)\b/.test(q)) return n - 1;
+  // No preference -> take the first offered (typically the base service); the owner confirms anyway.
+  if (/\b(either|whichever|whatever|doesn ?t matter|dealers choice|you (pick|choose)|your (call|choice))\b/.test(q)) return 0;
+  return null;
+}
+
 /**
  * Narrow a caller's follow-up fragment ("just a cut", "the one with style", "no style", "women's")
  * to ONE of a small set of options the assistant ALREADY offered. This is the dialog-state fix:
@@ -237,6 +250,10 @@ function resolveAmong(phrase, amongNames, serviceJSON) {
     const styled = options.filter(hasStyle);
     if (styled.length === 1) return done(styled[0]);
   }
+  // Positional answer ("the first one", "second", "the last one") — map by offered order. Checked
+  // before the plain/scoring fallbacks so "just the second one" picks #2, not the plainest.
+  const ord = ordinalIndex(q, options.length);
+  if (ord != null && options[ord]) return done(options[ord]);
   if (wantsPlain) {
     const plain = options
       .filter((o) => !hasStyle(o))
