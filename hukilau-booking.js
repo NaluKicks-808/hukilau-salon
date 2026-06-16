@@ -724,6 +724,46 @@ async function getServiceInfo(args = {}) {
   };
 }
 
+// ---------- Tool 7: resolve_service (deterministic service-name resolution) ----------
+
+// A lightweight, side-effect-free tool the assistant calls EARLY — the moment a caller names a
+// service, before any booking — to turn fuzzy/non-canonical phrasing ("brow tint", "gray retouch",
+// "highlights") into either the exact menu name, a "did you mean ...?" choice, or an off-menu
+// acknowledgment. This keeps the model from inventing menu facts (e.g. wrongly claiming a service
+// isn't offered) or guessing categories conversationally — resolution is 100% server-side.
+async function resolveServicePhrase(args = {}) {
+  const phrase = [args.service, args.phrase, args.query].find((x) => x && String(x).trim());
+  if (!phrase) {
+    return { ok: false, error: 'missing_fields', message: 'What service are you asking about?', data: { missing: ['service'] } };
+  }
+  let data;
+  try {
+    data = await getSalonData();
+  } catch (_) {
+    return { ok: false, error: 'unavailable', message: "I can't pull up our service list right this second — the salon can confirm the exact service.", data: {} };
+  }
+  const { matches, unresolved } = resolveServices([phrase], data.serviceJSON);
+  if (matches.length) {
+    // Exact/aliased match — hand back the canonical menu name for the assistant to use as-is.
+    return { ok: true, message: matches[0].name, data: { resolved: true, canonical: matches[0].name } };
+  }
+  const u = unresolved[0] || { candidates: [], ambiguous: false };
+  if (u.ambiguous && u.candidates && u.candidates.length) {
+    // Two+ real menu matches — ask the caller to choose (same wording the booking tool uses).
+    return {
+      ok: true,
+      message: `Did you mean ${speakOr(u.candidates.map((c) => c.name))}?`,
+      data: { resolved: false, ambiguous: true, candidates: u.candidates },
+    };
+  }
+  // Not a listed service. Tell the assistant it's a special request to CAPTURE — never to deny.
+  return {
+    ok: true,
+    message: `"${String(phrase).trim()}" isn't one of our standard listed services, but I can still take it as a special request for the salon to confirm.`,
+    data: { resolved: false, offMenu: true },
+  };
+}
+
 // parseClock is exported for unit tests.
 module.exports = {
   checkAvailability,
@@ -732,6 +772,7 @@ module.exports = {
   rescheduleAppointment,
   findEarliestAvailability,
   getServiceInfo,
+  resolveServicePhrase,
   parseClock,
   parseWeekdays,
 };

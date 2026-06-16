@@ -360,6 +360,22 @@ async function runLive() {
     ok(!noSvc.ok && noSvc.error === 'missing_fields', 'price needs a service');
   }
 
+  section('LIVE: resolve_service (deterministic name resolution, no model guessing)');
+  {
+    const exact = await tools.resolveServicePhrase({ service: "men's haircut" });
+    ok(exact.ok && exact.message === "Men's Haircut" && exact.data.resolved === true, 'alias resolves to canonical "Men\'s Haircut"');
+    const browTint = await tools.resolveServicePhrase({ service: 'brow tint' });
+    ok(browTint.ok && browTint.message === 'Brow Tinting', '"brow tint" resolves to "Brow Tinting" (no "we don\'t offer it")');
+    const amb = await tools.resolveServicePhrase({ service: 'haircut' });
+    ok(amb.ok && amb.data.ambiguous === true && /did you mean/i.test(amb.message), '"haircut" returns a did-you-mean choice');
+    const off = await tools.resolveServicePhrase({ service: 'hot stone massage' });
+    ok(off.ok && off.data.offMenu === true, 'unlisted service is flagged off-menu (special request)');
+    ok(!/don'?t offer|not offered|do not offer/i.test(off.message), 'off-menu reply never claims the salon does not offer it');
+    const noSvc = await tools.resolveServicePhrase({});
+    ok(!noSvc.ok && noSvc.error === 'missing_fields', 'resolve_service needs a phrase');
+    console.log('   ' + amb.message);
+  }
+
   section('LIVE: next-available-days fallback + optional last name');
   {
     const { findNextDays } = require('./src/availabilityEngine');
