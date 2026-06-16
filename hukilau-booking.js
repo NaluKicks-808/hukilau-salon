@@ -40,6 +40,14 @@ function speakSlots(slots, n = 5) {
   return speakList(slots.slice(0, n).map((s) => s.time));
 }
 
+// Like speakList but joins with "or" — for offering the caller a choice ("X, Y, or Z?").
+function speakOr(items) {
+  if (!items.length) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} or ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
+}
+
 function prettyDate(iso) {
   // Month + day only; the weekday is prepended separately as `${r.weekday}, ${prettyDate()}`.
   return moment(iso, 'YYYY-MM-DD').format('MMMM D');
@@ -311,6 +319,19 @@ async function bookAppointment(args = {}) {
     maxPerStylist: 500,
   });
   if (!r.ok) {
+    // Ambiguous service ("a haircut", "gray retouch", "highlights"): the caller named a REAL menu
+    // service imprecisely and there are two+ plausible matches. Ask which one — do NOT silently
+    // capture it as an off-menu/custom booking, which would skip the price and the slot re-check.
+    if (r.error === 'unknown_service' && r.ambiguous && r.candidates && r.candidates.length) {
+      return {
+        ok: false,
+        error: 'ambiguous_service',
+        message: `I want to book exactly the right thing — did you mean ${speakOr(
+          r.candidates.map((c) => c.name)
+        )}?`,
+        data: { candidates: r.candidates },
+      };
+    }
     // Off-menu / custom service: don't turn callers away. Capture the request with a note and
     // let the salon confirm service, price, and time. (The date was already validated above.)
     if (r.error === 'unknown_service') {

@@ -58,6 +58,15 @@ const ALIASES = {
   'brow lamination': 'Brow Lamination',
   brows: 'Brows',
   eyebrows: 'Brows',
+  'brow wax': 'Brows',
+  'eyebrow wax': 'Brows',
+  // Stemming/synonym fixes for near-exact phrasings the token scorer narrowly misses
+  // ("tint" vs "tinting"), so these resolve confidently instead of asking to clarify.
+  'brow tint': 'Brow Tinting',
+  'eyebrow tint': 'Brow Tinting',
+  'brow tinting': 'Brow Tinting',
+  'lash tint': 'Lash Tinting',
+  'eyelash tint': 'Lash Tinting',
   'face wax': 'Full Face Wax',
   olaplex: 'Olaplex Ritual',
 };
@@ -125,14 +134,21 @@ function resolveService(input, serviceJSON) {
 
   const best = ranked[0];
   const second = ranked[1];
-  const candidates = ranked.slice(0, 3).map((r) => ({ index: r.s.index, name: r.s.name }));
+  // "Real" candidates share at least one whole word with the query (score >= 2). We only ever
+  // ask the caller to choose among these — never among zero-overlap junk matches.
+  const real = ranked.filter((r) => r.sc >= 2).slice(0, 3).map((r) => ({ index: r.s.index, name: r.s.name }));
+  const candidates = real.length ? real : ranked.slice(0, 3).map((r) => ({ index: r.s.index, name: r.s.name }));
 
   // Confident if the top match shares real tokens and clearly beats the runner-up.
   if (best && best.sc >= 2 && (!second || best.sc - second.sc >= 1)) {
-    return { match: toResult(best.s), candidates };
+    return { match: toResult(best.s), candidates, ambiguous: false };
   }
-  // Otherwise return candidates so the caller can be asked to clarify.
-  return { match: null, candidates };
+  // Ambiguous = two or more PLAUSIBLE menu services with comparable scores (e.g. "haircut",
+  // "gray retouch", "highlights"). The caller named a real service imprecisely and should be
+  // asked which one. A lone weak partial (e.g. "lash lift" grazing "Lash Tinting") is NOT
+  // ambiguous — best.sc>=2 but second.sc<2 — so it still falls through to off-menu capture.
+  const ambiguous = !!(best && second && best.sc >= 2 && second.sc >= 2 && best.sc - second.sc < 1);
+  return { match: null, candidates, ambiguous };
 }
 
 /**
@@ -147,7 +163,7 @@ function resolveServices(names, serviceJSON) {
     if (!n || !String(n).trim()) continue;
     const r = resolveService(n, serviceJSON);
     if (r.match) matches.push(r.match);
-    else unresolved.push({ input: String(n).trim(), candidates: r.candidates });
+    else unresolved.push({ input: String(n).trim(), candidates: r.candidates, ambiguous: r.ambiguous });
   }
   return { matches, unresolved };
 }

@@ -50,6 +50,21 @@ function runUnit() {
   ok(resolveService('balayage', svc).match?.name === 'Balayage', 'exact: balayage');
   ok(resolveService('unicorn grooming', svc).match === null, 'unknown -> no match');
   ok(resolveService('unicorn grooming', svc).candidates.length > 0, 'unknown -> candidates offered');
+  ok(resolveService('unicorn grooming', svc).ambiguous === false, 'truly unknown -> NOT ambiguous (so it off-menus, not clarifies)');
+
+  // Ambiguity vs off-menu: a caller naming a REAL service imprecisely ("gray retouch") must be
+  // asked which one — not silently captured as a custom booking. A lone weak partial is not ambiguous.
+  const ambSvc = [
+    { name: 'Gray Root Retouch', posID: 'G1', duration: '01:00:00', price: 9000 },
+    { name: 'Gray Retouch No Blowdry', posID: 'G2', duration: '00:45:00', price: 7000 },
+    { name: 'Brow Tinting', posID: 'BT', duration: '00:15:00', price: 2000 },
+    { name: 'Brow Lamination', posID: 'BL', duration: '00:45:00', price: 6000 },
+  ];
+  const grayR = resolveService('gray retouch', ambSvc);
+  ok(grayR.match === null && grayR.ambiguous === true, '"gray retouch" is ambiguous (two real matches)');
+  ok(grayR.candidates.length >= 2, '"gray retouch" offers both gray services as candidates');
+  ok(resolveService('brow tint', ambSvc).match?.name === 'Brow Tinting', 'alias fixes stem: brow tint -> Brow Tinting');
+  ok(resolveService('hot stone massage', ambSvc).ambiguous === false, 'unrelated service is not ambiguous (off-menu)');
 
   section('stylists (alias / any)');
   ok(resolveStylist('trish')?.index === 2, 'alias: trish -> Patricia (2)');
@@ -266,6 +281,15 @@ async function runLive() {
   ok(offMenu.ok, 'off-menu service is captured, not rejected');
   ok(offMenu.data.booking.offMenu === true, 'off-menu booking is flagged');
   ok(/OFF-MENU/i.test(offMenu.data.ownerMessage), 'owner message flags off-menu / custom');
+
+  // ambiguous service ("a haircut") must ask which one — NOT capture a vague off-menu booking
+  const amb = await tools.bookAppointment({
+    firstName: 'Test', lastName: 'Caller', phone: '808-555-0000',
+    service: 'haircut', stylist: '', date: found.iso, time: '10:00 AM',
+  });
+  ok(!amb.ok && amb.error === 'ambiguous_service', 'ambiguous service ("haircut") asks to clarify, not off-menu');
+  ok(/did you mean/i.test(amb.message), 'ambiguous booking asks "did you mean ...?"');
+  ok(!(amb.data && amb.data.booking), 'ambiguous booking creates NO off-menu capture');
 
   section('LIVE: booking validates the FULL day (not just the speech cap) + phone sanity');
   {

@@ -68,6 +68,8 @@ function resolveServiceSelection(args, serviceJSON) {
       error: 'unknown_service',
       message: `I'm not sure which service you mean by "${u.input}".`,
       candidates: u.candidates || [],
+      // true => real menu matches the caller should choose between; false => genuinely off-menu.
+      ambiguous: !!u.ambiguous,
     };
   }
   const names = matches.map((m) => m.name);
@@ -116,7 +118,7 @@ async function getAvailability(args) {
 
   const sel = resolveServiceSelection(args, data.serviceJSON);
   if (!sel.ok) {
-    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates };
+    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates, ambiguous: sel.ambiguous };
   }
 
   const stylistRec = resolveStylist(args.stylist);
@@ -230,7 +232,7 @@ async function findEarliest(args) {
 
   const sel = resolveServiceSelection(args, data.serviceJSON);
   if (!sel.ok) {
-    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates };
+    return { ok: false, error: sel.error, message: sel.message, candidates: sel.candidates, ambiguous: sel.ambiguous };
   }
 
   const stylistRec = resolveStylist(args.stylist);
