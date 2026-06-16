@@ -66,6 +66,21 @@ function runUnit() {
   ok(resolveService('brow tint', ambSvc).match?.name === 'Brow Tinting', 'alias fixes stem: brow tint -> Brow Tinting');
   ok(resolveService('hot stone massage', ambSvc).ambiguous === false, 'unrelated service is not ambiguous (off-menu)');
 
+  // Regression (Vapi live call): "root touch up" must NOT surface "Make-up"/"Up Do's" as
+  // candidates just because they share the filler token "up". It should resolve cleanly to the
+  // gray root retouch.
+  const rootSvc = [
+    { name: 'Gray Root Retouch', posID: 'G1', duration: '01:00:00', price: 9000 },
+    { name: 'Make-up', posID: 'MU', duration: '00:45:00', price: 6500 },
+    { name: "Up Do's", posID: 'UD', duration: '00:45:00', price: 7500 },
+  ];
+  const rootR = resolveService('root touch up', rootSvc);
+  ok(rootR.match?.name === 'Gray Root Retouch', '"root touch up" -> Gray Root Retouch (not Make-up/Up Do\'s)');
+  ok(
+    !(rootR.candidates || []).some((c) => c.name === 'Make-up' || c.name === "Up Do's"),
+    '"root touch up" never offers Make-up / Up Do\'s as candidates'
+  );
+
   section('stylists (alias / any)');
   ok(resolveStylist('trish')?.index === 2, 'alias: trish -> Patricia (2)');
   ok(resolveStylist('KELLY')?.index === 1, 'alias: KELLY -> Kelli (1)');

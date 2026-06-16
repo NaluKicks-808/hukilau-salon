@@ -49,6 +49,12 @@ const ALIASES = {
   color: 'Whole Head Color',
   'full color': 'Whole Head Color',
   'all over color': 'Whole Head Color',
+  // "Root touch up" is the most common spoken name for a gray root retouch — pin it so it never
+  // gets pulled toward "Make-up"/"Up Do's" by the shared "up" token (see STOPWORDS note below).
+  'root touch up': 'Gray Root Retouch',
+  'root touchup': 'Gray Root Retouch',
+  'root retouch': 'Gray Root Retouch',
+  'gray root touch up': 'Gray Root Retouch',
   perm: 'Perm',
   balayage: 'Balayage',
   'full highlights': 'Full Head Highlight',
@@ -71,8 +77,22 @@ const ALIASES = {
   olaplex: 'Olaplex Ritual',
 };
 
+// Generic filler/intent words that carry no service meaning. They must NOT contribute to token
+// overlap — otherwise a noise word like "up" in "root touch up" falsely matches "Make-up" and
+// "Up Do's" (each a 2-token name sharing only "up") and outranks the real service, "Gray Root
+// Retouch". None of the real service names reduce to empty after stripping these (e.g. "Up Do's"
+// still keeps "dos", "Make-up" keeps "make"), and their common phrasings are alias/exact-covered.
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'for', 'to', 'with', 'my', 'your', 'please',
+  'up', 'some', 'i', 'id', 'need', 'want', 'get', 'got', 'book', 'booking', 'schedule',
+  'appointment', 'appt', 'like', 'would', 'can', 'could', 'do', 'have',
+]);
+
 function tokenize(s) {
-  return normalize(s).split(' ').filter(Boolean);
+  const all = normalize(s).split(' ').filter(Boolean);
+  const kept = all.filter((t) => !STOPWORDS.has(t));
+  // Never let stopword stripping zero out a name/query entirely — fall back to the raw tokens.
+  return kept.length ? kept : all;
 }
 
 function score(queryTokens, nameTokens) {
