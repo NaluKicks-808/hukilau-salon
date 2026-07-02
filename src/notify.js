@@ -3,9 +3,11 @@
 /**
  * Owner notification adapter — fans a captured request out to every configured channel:
  *
- *  - NOTION  : adds a row to the "Booking Requests" database (set NOTION_API_KEY + NOTION_DATABASE_ID)
- *  - TELNYX  : texts the owner (set TELNYX_API_KEY + TELNYX_FROM + OWNER_PHONE)
- *  - return  : if neither is set, the request is just returned to Vapi in the tool result
+ *  - NOTION   : adds a row to the "Booking Requests" database (set NOTION_API_KEY + NOTION_DATABASE_ID)
+ *  - PUSHOVER : instant push to the owner's phone (set PUSHOVER_TOKEN + PUSHOVER_USER); NEW bookings
+ *               use emergency priority so an overnight booking keeps alerting until acknowledged
+ *  - TELNYX   : texts the owner (set TELNYX_API_KEY + TELNYX_FROM + OWNER_PHONE)
+ *  - return   : if none are set, the request is just returned to Vapi in the tool result
  *
  * Run Notion now and add SMS later — both fire. The owner re-enters confirmed bookings in Salon
  * Scheduler (capture-only; we never write to the salon site). Legacy Twilio via NOTIFY_MODE=twilio.
@@ -23,6 +25,10 @@ function notionConfigured() {
   return !!(process.env.NOTION_API_KEY && process.env.NOTION_DATABASE_ID);
 }
 
+function pushoverConfigured() {
+  return !!(process.env.PUSHOVER_TOKEN && process.env.PUSHOVER_USER);
+}
+
 // Captured requests fan out to EVERY configured channel (Notion database + Telnyx SMS), so you can
 // run Notion now and add SMS later and get both. Falls back to return-to-Vapi if none are set.
 // NOTIFY_MODE=return forces return-only (used by tests); NOTIFY_MODE=twilio uses the legacy SMS.
@@ -30,6 +36,7 @@ function activeChannels() {
   if (process.env.NOTIFY_MODE === 'return') return ['return'];
   const ch = [];
   if (notionConfigured()) ch.push('notion');
+  if (pushoverConfigured()) ch.push('pushover');
   if (telnyxConfigured()) ch.push('telnyx');
   else if (process.env.NOTIFY_MODE === 'twilio') ch.push('twilio');
   return ch.length ? ch : ['return'];
@@ -62,6 +69,14 @@ function formatOwnerMessage(b) {
       `To:   ${b.when}`,
       b.note ? `Note: ${b.note}` : null,
       'Please move it in Salon Scheduler to confirm (deposit may apply).',
+    ];
+  } else if (action === 'note') {
+    lines = [
+      'NOTE FOR A BOOKING (add it to the appointment in Salon Scheduler):',
+      who,
+      svcStylist || null,
+      b.when ? `Appointment: ${b.when}` : null,
+      `Note: ${b.note}`,
     ];
   } else {
     lines = [
@@ -123,6 +138,52 @@ async function sendTelnyx(b) {
   }
 }
 
+// Instant push to the owner's phone via Pushover. NEW bookings use emergency priority (2) so an
+// overnight booking keeps re-alerting every minute (up to an hour) until the owner acknowledges it —
+// the "don't sleep through a new client" safety net. Other actions use high priority (1).
+async function sendPushover(b) {
+  const { PUSHOVER_TOKEN, PUSHOVER_USER } = process.env;
+  if (!PUSHOVER_TOKEN || !PUSHOVER_USER) {
+    return { delivered: false, channel: 'pushover', detail: 'Pushover env vars not configured.' };
+  }
+  const action = b.action || 'book';
+  const title =
+    action === 'cancel'
+      ? '❌ Cancellation request'
+      : action === 'reschedule'
+        ? '🔁 Reschedule request'
+        : action === 'note'
+          ? '📝 Note for a booking'
+          : '📅 New booking request';
+  const emergency = action === 'book';
+  const params = {
+    token: PUSHOVER_TOKEN,
+    user: PUSHOVER_USER,
+    title,
+    message: formatOwnerMessage(b),
+    priority: String(emergency ? 2 : 1),
+  };
+  if (emergency) {
+    params.retry = '60'; // re-alert every 60s…
+    params.expire = '3600'; // …for up to an hour, until acknowledged
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000); // never let a slow push hang the tool response
+  try {
+    const res = await fetch('https://api.pushover.net/1/messages.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params),
+      signal: ctrl.signal,
+    });
+    return { delivered: res.ok, channel: 'pushover', detail: res.ok ? 'sent' : `HTTP ${res.status}` };
+  } catch (e) {
+    return { delivered: false, channel: 'pushover', detail: e.name === 'AbortError' ? 'timeout' : e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Add one row to the "Booking Requests" Notion database. Auto-enabled when NOTION_API_KEY +
 // NOTION_DATABASE_ID are set (and the database is shared with that integration).
 async function sendNotion(b) {
@@ -159,7 +220,8 @@ async function sendNotion(b) {
 // Map a captured request to the "Booking Requests" database columns. Exported for tests.
 function buildNotionProperties(b) {
   const action = b.action || 'book';
-  const Action = action === 'cancel' ? 'Cancel' : action === 'reschedule' ? 'Reschedule' : 'Book';
+  const Action =
+    action === 'cancel' ? 'Cancel' : action === 'reschedule' ? 'Reschedule' : action === 'note' ? 'Note' : 'Book';
   const name = [b.customer.firstName, b.customer.lastName].filter(Boolean).join(' ') || b.customer.firstName || '(no name)';
   const noteParts = [];
   if (b.offMenu) noteParts.push('OFF-MENU — confirm service & price');
@@ -188,6 +250,7 @@ async function notifyOwner(booking) {
   const jobs = [];
   if (process.env.NOTIFY_MODE !== 'return') {
     if (notionConfigured()) jobs.push(sendNotion);
+    if (pushoverConfigured()) jobs.push(sendPushover);
     if (telnyxConfigured()) jobs.push(sendTelnyx);
     else if (process.env.NOTIFY_MODE === 'twilio') jobs.push(sendTwilio);
   }
@@ -201,4 +264,4 @@ async function notifyOwner(booking) {
   return { delivered: channels.some((c) => c.delivered), channel: channels.map((c) => c.channel).join('+'), channels };
 }
 
-module.exports = { notifyOwner, formatOwnerMessage, buildNotionProperties, notionConfigured, MODE };
+module.exports = { notifyOwner, formatOwnerMessage, buildNotionProperties, notionConfigured, pushoverConfigured, MODE };

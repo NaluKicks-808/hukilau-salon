@@ -490,6 +490,45 @@ async function runLive() {
     );
   }
 
+  section('LIVE: add_appointment_note captures WITHOUT re-booking (the note-bug fix)');
+  {
+    const { formatOwnerMessage, pushoverConfigured } = require('./src/notify');
+    const noteMissing = await tools.addAppointmentNote({ firstName: 'Test' });
+    ok(!noteMissing.ok && noteMissing.error === 'missing_fields', 'add-note needs the note text');
+
+    const realFetch3 = global.fetch;
+    const urls3 = [];
+    global.fetch = (u, o) => {
+      urls3.push(String(u));
+      return realFetch3(u, o);
+    };
+    let note;
+    let bareNote;
+    try {
+      note = await tools.addAppointmentNote({
+        firstName: 'Test', lastName: 'Caller', phone: '808-555-0000',
+        date: found.iso, time: r.data.earliest.time, service, note: 'Prefers a buzz cut style',
+      });
+      // Even with NO date/time (caller just says "add a note" right after booking), it must still
+      // succeed — never fall back to book_appointment and collide with the slot's own hold.
+      bareNote = await tools.addAppointmentNote({ note: 'Allergic to a certain product' });
+    } finally {
+      global.fetch = realFetch3;
+    }
+    ok(note.ok && note.data.note.action === 'note', 'note captured as an internal note (not a booking)');
+    ok(
+      /NOTE FOR A BOOKING/i.test(note.data.ownerMessage) && /buzz cut/i.test(note.data.ownerMessage),
+      'owner gets the note tied to the appointment'
+    );
+    ok(!urls3.some((u) => /getappt|bookcbbnew|clover/i.test(u)), 'add-note NEVER checks availability or writes to the salon');
+    ok(bareNote.ok, 'a bare note (no date) still captures — never re-books/collides');
+
+    // Pushover: a new owner channel that stays off until its two env vars are set.
+    ok(pushoverConfigured() === false, 'pushover is off until PUSHOVER_TOKEN + PUSHOVER_USER are set');
+    const notePreview = formatOwnerMessage({ action: 'note', customer: { firstName: 'Jo', phone: '808' }, when: 'Tue at 2:15 PM', note: 'buzz cut' });
+    ok(/Note: buzz cut/.test(notePreview), 'formatOwnerMessage renders the note action');
+  }
+
   section('LIVE: appointments cache (repeat lookups hit cache, not network)');
   {
     const { getBookedAppointments } = require('./src/salonClient');

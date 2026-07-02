@@ -499,6 +499,43 @@ async function cancelAppointment(args = {}) {
   };
 }
 
+// Tool: add_appointment_note — attach a note/preference to a booking the caller JUST made
+// ("leave a note that I want a buzz cut"). This is the fix for the re-booking bug: a note must NEVER
+// re-run book_appointment (which re-checks availability and collides with the new booking's own hold,
+// making the slot look "taken"). We only forward the note to the owner — no availability, no hold.
+async function addAppointmentNote(args = {}) {
+  const note = args.note ? String(args.note).trim() : '';
+  if (!note) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: 'Sure — what would you like the note to say?',
+      data: { missing: ['note'] },
+    };
+  }
+  const when = describeWhen(args.date, args.time);
+  const requested = resolveStylist(args.stylist);
+  const noteRequest = {
+    action: 'note',
+    status: 'pending_owner_action',
+    customer: customerFrom(args),
+    service: args.service ? String(args.service).trim() : null,
+    stylist: requested ? requested.full : args.stylist ? String(args.stylist).trim() : null,
+    date: when.iso,
+    when: when.text,
+    note,
+    source: 'vapi-ai-receptionist',
+    capturedAt: new Date().toISOString(),
+  };
+  const delivery = await notifyOwner(noteRequest);
+  const forWhom = when.text ? ` to your ${when.text} appointment` : ' to your appointment';
+  return {
+    ok: true,
+    message: `Got it — I've added that note${forWhom}, and the salon will see it. Anything else?`,
+    data: { note: noteRequest, delivery, ownerMessage: formatOwnerMessage(noteRequest) },
+  };
+}
+
 async function rescheduleAppointment(args = {}) {
   const required = ['firstName', 'phone', 'newDate', 'newTime'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
@@ -798,6 +835,7 @@ module.exports = {
   bookAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  addAppointmentNote,
   findEarliestAvailability,
   getServiceInfo,
   resolveServicePhrase,

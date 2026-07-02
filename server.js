@@ -31,6 +31,7 @@ const {
   bookAppointment,
   cancelAppointment,
   rescheduleAppointment,
+  addAppointmentNote,
   findEarliestAvailability,
   getServiceInfo,
   resolveServicePhrase,
@@ -45,6 +46,9 @@ const TOOLS = {
   book_appointment: bookAppointment,
   cancel_appointment: cancelAppointment,
   reschedule_appointment: rescheduleAppointment,
+  // Attach a note to a just-made booking WITHOUT re-booking (fixes the "note made the slot disappear"
+  // bug: re-running book_appointment collided with the new booking's own hold).
+  add_appointment_note: addAppointmentNote,
   find_earliest_availability: findEarliestAvailability,
   get_service_info: getServiceInfo,
   resolve_service: resolveServicePhrase,
@@ -154,6 +158,7 @@ app.post('/vapi/check-availability', (req, res) => handleToolRequest(req, res, '
 app.post('/vapi/book-appointment', (req, res) => handleToolRequest(req, res, 'book_appointment'));
 app.post('/vapi/cancel-appointment', (req, res) => handleToolRequest(req, res, 'cancel_appointment'));
 app.post('/vapi/reschedule-appointment', (req, res) => handleToolRequest(req, res, 'reschedule_appointment'));
+app.post('/vapi/add-note', (req, res) => handleToolRequest(req, res, 'add_appointment_note'));
 app.post('/vapi/find-earliest', (req, res) => handleToolRequest(req, res, 'find_earliest_availability'));
 app.post('/vapi/service-info', (req, res) => handleToolRequest(req, res, 'get_service_info'));
 app.post('/vapi/resolve-service', (req, res) => handleToolRequest(req, res, 'resolve_service'));
