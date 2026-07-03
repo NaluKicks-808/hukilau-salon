@@ -433,7 +433,7 @@ async function bookAppointment(args = {}) {
       }
       return {
         ok: true,
-        message: `Okay — I've sent your request for ${booking.service} on ${when.text} to the salon, and they'll confirm with you shortly.`,
+        message: `Okay — I've sent your request for ${booking.service} on ${when.text} to the salon, and they'll send you a text message to confirm shortly.`,
         data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
       };
     }
@@ -516,7 +516,7 @@ async function bookAppointment(args = {}) {
     ok: true,
     message:
       `Got it — I've put in a request for a ${booking.service} with ${booking.stylist} on ${booking.when}. ` +
-      `The salon will confirm with you shortly.`,
+      `The salon will send you a text message to confirm shortly.`,
     data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
   };
 }
@@ -743,7 +743,7 @@ async function rescheduleAppointment(args = {}) {
 
   return {
     ok: true,
-    message: `Done — I've asked the salon to move your appointment to ${newWhen}. They'll confirm shortly.`,
+    message: `Done — I've asked the salon to move your appointment to ${newWhen}. They'll send you a text message to confirm shortly.`,
     data: { reschedule, delivery, ownerMessage: formatOwnerMessage(reschedule) },
   };
 }
