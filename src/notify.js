@@ -43,50 +43,67 @@ function activeChannels() {
 }
 const MODE = activeChannels().join('+');
 
+// The salon's local date ("YYYY-MM-DD"). Vercel runs in UTC; Hawaii has no DST.
+function todayInSalonTz() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: process.env.SALON_TZ || 'Pacific/Honolulu' });
+}
+
+// A request is "same-day" when the appointment date is today in salon time. Unparseable/vague
+// dates (b.date null) are NOT treated as same-day — the alert still arrives, it just doesn't nag.
+function isSameDayAppointment(b) {
+  return !!b.date && b.date === todayInSalonTz();
+}
+
+// Every owner message carries the full handoff: service, stylist, date+time, customer name,
+// phone, and any notes — so the owner can act from the notification alone.
 function formatOwnerMessage(b) {
   const action = b.action || 'book';
   const name = [b.customer.firstName, b.customer.lastName].filter(Boolean).join(' ') || '(first name only)';
-  const who = `${name} — ${b.customer.phone}`;
-  const svcStylist = [b.service, b.stylist].filter(Boolean).join(' with ');
+  const stylist = b.stylist || 'Any available stylist';
+  const svcStylist = b.service ? `${b.service} with ${stylist}` : `(service TBD) with ${stylist}`;
+  const details = [
+    `📅 ${b.when || '(time not given)'}`,
+    `👤 ${name}`,
+    `📞 ${b.customer.phone || '(no phone captured)'}`,
+    b.note ? `📝 ${b.note}` : null,
+  ];
   let lines;
 
   if (action === 'cancel') {
     lines = [
       'CANCELLATION REQUEST (not yet changed in Salon Scheduler):',
-      who,
-      `Appointment to cancel: ${svcStylist || '(see time)'}`,
-      b.when,
+      `Appointment to cancel: ${svcStylist}`,
+      ...details,
       b.reason ? `Reason: ${b.reason}` : null,
-      b.note ? `Note: ${b.note}` : null,
       'Please cancel it in Salon Scheduler.',
     ];
   } else if (action === 'reschedule') {
     lines = [
       'RESCHEDULE REQUEST (not yet changed in Salon Scheduler):',
-      who,
-      svcStylist || null,
+      svcStylist,
       `From: ${b.fromWhen || '(time not given)'}`,
-      `To:   ${b.when}`,
-      b.note ? `Note: ${b.note}` : null,
+      `To:   ${b.when || '(time not given)'}`,
+      `👤 ${name}`,
+      `📞 ${b.customer.phone || '(no phone captured)'}`,
+      b.note ? `📝 ${b.note}` : null,
       'Please move it in Salon Scheduler to confirm (deposit may apply).',
     ];
   } else if (action === 'note') {
     lines = [
       'NOTE FOR A BOOKING (add it to the appointment in Salon Scheduler):',
-      who,
-      svcStylist || null,
-      b.when ? `Appointment: ${b.when}` : null,
-      `Note: ${b.note}`,
+      svcStylist,
+      b.when ? `📅 ${b.when}` : null,
+      `👤 ${name}`,
+      `📞 ${b.customer.phone || '(no phone captured)'}`,
+      `📝 ${b.note}`,
     ];
   } else {
     lines = [
       b.offMenu
         ? 'NEW BOOKING REQUEST — OFF-MENU / CUSTOM (confirm service & price):'
         : 'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
-      who,
-      b.stylist ? `${b.service} with ${b.stylist}` : b.service,
-      b.when,
-      b.note ? `Note: ${b.note}` : null,
+      svcStylist,
+      ...details,
       'Please enter it in Salon Scheduler to confirm.',
     ];
   }
@@ -138,16 +155,16 @@ async function sendTelnyx(b) {
   }
 }
 
-// Instant push to the owner's phone via Pushover. NEW bookings use emergency priority (2) so an
-// overnight booking keeps re-alerting every minute (up to an hour) until the owner acknowledges it —
-// the "don't sleep through a new client" safety net. Other actions use high priority (1).
+// Instant push to the owner's phone via Pushover. Emergency priority (repeat every minute until
+// acknowledged) is reserved for SAME-DAY appointments only — those can't wait. Everything else is
+// a normal one-time alert: it rings once and the owner can look when convenient (owner's request).
 async function sendPushover(b) {
   const { PUSHOVER_TOKEN, PUSHOVER_USER } = process.env;
   if (!PUSHOVER_TOKEN || !PUSHOVER_USER) {
     return { delivered: false, channel: 'pushover', detail: 'Pushover env vars not configured.' };
   }
   const action = b.action || 'book';
-  const title =
+  const baseTitle =
     action === 'cancel'
       ? '❌ Cancellation request'
       : action === 'reschedule'
@@ -155,13 +172,13 @@ async function sendPushover(b) {
         : action === 'note'
           ? '📝 Note for a booking'
           : '📅 New booking request';
-  const emergency = action === 'book';
+  const emergency = isSameDayAppointment(b);
   const params = {
     token: PUSHOVER_TOKEN,
     user: PUSHOVER_USER,
-    title,
+    title: emergency ? `🚨 TODAY — ${baseTitle}` : baseTitle,
     message: formatOwnerMessage(b),
-    priority: String(emergency ? 2 : 1),
+    priority: String(emergency ? 2 : 0),
   };
   if (emergency) {
     params.retry = '60'; // re-alert every 60s…
@@ -264,4 +281,12 @@ async function notifyOwner(booking) {
   return { delivered: channels.some((c) => c.delivered), channel: channels.map((c) => c.channel).join('+'), channels };
 }
 
-module.exports = { notifyOwner, formatOwnerMessage, buildNotionProperties, notionConfigured, pushoverConfigured, MODE };
+module.exports = {
+  notifyOwner,
+  formatOwnerMessage,
+  buildNotionProperties,
+  notionConfigured,
+  pushoverConfigured,
+  isSameDayAppointment,
+  MODE,
+};

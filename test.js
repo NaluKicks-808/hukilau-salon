@@ -526,7 +526,32 @@ async function runLive() {
     // Pushover: a new owner channel that stays off until its two env vars are set.
     ok(pushoverConfigured() === false, 'pushover is off until PUSHOVER_TOKEN + PUSHOVER_USER are set');
     const notePreview = formatOwnerMessage({ action: 'note', customer: { firstName: 'Jo', phone: '808' }, when: 'Tue at 2:15 PM', note: 'buzz cut' });
-    ok(/Note: buzz cut/.test(notePreview), 'formatOwnerMessage renders the note action');
+    ok(/📝 buzz cut/.test(notePreview), 'formatOwnerMessage renders the note action');
+    ok(/👤 Jo/.test(notePreview) && /📞 808/.test(notePreview), 'note message still carries name + phone');
+
+    // Same-day gate: emergency (repeat-until-ack) Pushover is ONLY for appointments dated today
+    // in salon time; future dates and unparseable dates ring once and wait.
+    const { isSameDayAppointment } = require('./src/notify');
+    const todayHst = new Date().toLocaleDateString('en-CA', { timeZone: 'Pacific/Honolulu' });
+    ok(isSameDayAppointment({ date: todayHst }) === true, 'same-day appointment → emergency alert');
+    ok(isSameDayAppointment({ date: '2099-01-01' }) === false, 'future appointment → single normal alert');
+    ok(isSameDayAppointment({ date: null }) === false, 'unparseable date → single normal alert (no nag)');
+
+    // The booking owner-message must carry the complete handoff, stylist included even when
+    // the caller didn't pick one.
+    const bookPreview = formatOwnerMessage({
+      action: 'book',
+      customer: { firstName: 'Jane', lastName: 'Doe', phone: '(808) 555-1234' },
+      service: "Women's Cut & Style",
+      stylist: null,
+      when: 'Tuesday, August 12 at 2:00 PM (HST)',
+      note: 'first visit',
+    });
+    ok(/Any available stylist/.test(bookPreview), 'stylist line always present (falls back to Any available)');
+    ok(
+      /👤 Jane Doe/.test(bookPreview) && /📞 \(808\) 555-1234/.test(bookPreview) && /📅 Tuesday, August 12/.test(bookPreview) && /📝 first visit/.test(bookPreview),
+      'booking message carries name, phone, date/time, and note'
+    );
   }
 
   section('LIVE: appointments cache (repeat lookups hit cache, not network)');

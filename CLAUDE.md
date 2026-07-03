@@ -40,7 +40,11 @@ rescheduling, price quotes, service-name resolution, and post-booking notes.
   (filler words like "up"/"just" don't score). `resolveAmong()` handles did-you-mean answers
   including ordinals ("the first one") via the `among` param / `resolve_service_among` tool.
 - `src/notify.js` — owner alert fan-out: Notion row + Pushover push + Telnyx SMS (each auto-on when
-  its env vars are set). New bookings = Pushover EMERGENCY priority (repeats until acknowledged).
+  its env vars are set). Pushover EMERGENCY priority (repeats every 60s until acknowledged) fires
+  ONLY when the appointment is for TODAY in salon time (`isSameDayAppointment`, `SALON_TZ` default
+  Pacific/Honolulu); everything else is a single normal-priority ring (owner's request, 2026-07-02).
+  Every owner message carries the full handoff: service, stylist (falls back to "Any available
+  stylist"), 📅 date/time, 👤 name, 📞 phone, 📝 note.
 - `src/pendingHolds.js` — Upstash Redis 36h slot holds so two callers can't capture the same slot.
 - `src/salonClient.js` — fetches/caches salon config + booked appointments (`getappt.php`, unix-ms
   range POST). `scripts/analyze-history.js` can pull ~6 months of real appointment history.
