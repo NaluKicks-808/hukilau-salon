@@ -11,7 +11,7 @@
 const moment = require('moment-timezone');
 const { getSalonData, getBookedAppointments } = require('./salonClient');
 const core = require('../vendor/availability-core');
-const { resolveDate, todayParts, maxBookingMs } = require('./datetime');
+const { resolveDate, resolveFutureDate, todayParts, maxBookingMs } = require('./datetime');
 const { resolveServices } = require('./services');
 const { resolveStylist, displayName, shortName } = require('./stylists');
 const { getHolds } = require('./pendingHolds');
@@ -99,10 +99,14 @@ async function getAvailability(args) {
   const data = await loadAndConfigure();
   const tz = data.jsonMerchant.timezone;
 
-  const d = resolveDate(args.date, tz);
+  // resolveFutureDate: a past date here is always a mistake (live incident: the voice model
+  // stamped LAST year onto "Monday, July 6" -> "2024-07-06", got a past_date error, and
+  // looped retrying). Roll it to the next future occurrence instead of erroring.
+  const d = resolveFutureDate(args.date, tz);
   if (!d) {
     return { ok: false, error: 'bad_date', message: `I couldn't understand the date "${args.date}".` };
   }
+  if (d.rolled) console.warn(`date rolled forward: "${args.date}" (${d.originalIso}) -> ${d.iso}`);
 
   const today = todayParts(tz);
   if (d.startMs < today.startMs) {

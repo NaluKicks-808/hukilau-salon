@@ -70,8 +70,10 @@ function parseAmong(v) {
 }
 
 function prettyDate(iso) {
-  // Month + day only; the weekday is prepended separately as `${r.weekday}, ${prettyDate()}`.
-  return moment(iso, 'YYYY-MM-DD').format('MMMM D');
+  // Month, day AND YEAR; the weekday is prepended separately as `${r.weekday}, ${prettyDate()}`.
+  // The year is not optional politeness: the voice model doesn't know today's date, and without
+  // a year it once re-stamped "Monday, July 6" as 2024-07-06 when booking (past-date loop).
+  return moment(iso, 'YYYY-MM-DD').format('MMMM D, YYYY');
 }
 
 // Build a "that time isn't open" message whose alternatives never contradict the request:

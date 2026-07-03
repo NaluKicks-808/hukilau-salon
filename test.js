@@ -127,6 +127,18 @@ function runUnit() {
   ok(resolveDate('next tuesday') !== null, 'natural language: "next tuesday"');
   ok(resolveDate('not a date at all') === null, 'garbage -> null');
 
+  // REGRESSION (live call 019f2a3f): the voice model stamped LAST year onto an ISO date
+  // ("2024-07-06" for "Monday, July 6") and looped on past_date. Booking-forward paths must
+  // roll a past date to its next future occurrence; future dates pass through untouched.
+  const { resolveFutureDate, todayParts: tp } = require('./src/datetime');
+  const todayIso = tp().iso;
+  const staleYear = resolveFutureDate(todayIso.replace(/^\d{4}/, String(Number(todayIso.slice(0, 4)) - 2)));
+  ok(!!staleYear && staleYear.rolled === true && staleYear.iso >= todayIso, 'two-years-stale ISO rolls forward to a future date');
+  ok(resolveFutureDate('2024-07-06').iso.slice(5) === '07-06', 'rolled date keeps the same month/day');
+  const fut = resolveFutureDate('2026-12-25');
+  ok(fut && fut.rolled === false && fut.iso === '2026-12-25', 'future date passes through unrolled');
+  ok(resolveFutureDate('yesterday').rolled === true, 'natural-language past date also rolls forward');
+
   section('parseClock');
   ok(tools.parseClock('9:15 AM') === 555, '9:15 AM -> 555');
   ok(tools.parseClock('2:30 pm') === 870, '2:30 pm -> 870');
