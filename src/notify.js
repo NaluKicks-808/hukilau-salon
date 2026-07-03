@@ -54,9 +54,12 @@ function isSameDayAppointment(b) {
   return !!b.date && b.date === todayInSalonTz();
 }
 
-// Every owner message carries the full handoff: service, stylist, date+time, customer name,
-// phone, and any notes — so the owner can act from the notification alone.
-function formatOwnerMessage(b) {
+// The owner's message carries the full handoff: service, stylist, date+time, name, phone, notes.
+// `opts.header` controls the leading action label. Pushover passes { header: false } because its
+// notification TITLE already names the action, so repeating it in the body is clutter; SMS (no
+// title) keeps the label. The "Salon Scheduler" instruction appears once, at the bottom.
+function formatOwnerMessage(b, opts = {}) {
+  const withHeader = opts.header !== false;
   const action = b.action || 'book';
   // Cap caller-supplied free text so a caller can't blow up SMS segment count or spoof the owner
   // notification with a wall of text. Applies to the customer name, note, and reason only.
@@ -72,19 +75,20 @@ function formatOwnerMessage(b) {
     `📞 ${b.customer.phone || '(no phone captured)'}`,
     note ? `📝 ${note}` : null,
   ];
+  let header;
   let lines;
 
   if (action === 'cancel') {
+    header = 'Cancellation request:';
     lines = [
-      'CANCELLATION REQUEST (not yet changed in Salon Scheduler):',
       `Appointment to cancel: ${svcStylist}`,
       ...details,
       reason ? `Reason: ${reason}` : null,
       'Please cancel it in Salon Scheduler.',
     ];
   } else if (action === 'reschedule') {
+    header = 'Reschedule request:';
     lines = [
-      'RESCHEDULE REQUEST (not yet changed in Salon Scheduler):',
       svcStylist,
       `From: ${b.fromWhen || '(time not given)'}`,
       `To:   ${b.when || '(time not given)'}`,
@@ -94,24 +98,27 @@ function formatOwnerMessage(b) {
       'Please move it in Salon Scheduler to confirm (deposit may apply).',
     ];
   } else if (action === 'note') {
+    header = 'Note for a booking:';
     lines = [
-      'NOTE FOR A BOOKING (add it to the appointment in Salon Scheduler):',
       svcStylist,
       b.when ? `📅 ${b.when}` : null,
       `👤 ${name}`,
       `📞 ${b.customer.phone || '(no phone captured)'}`,
       `📝 ${note}`,
+      'Please add this note to the appointment in Salon Scheduler.',
     ];
   } else {
+    header = 'New booking request:';
     lines = [
-      b.offMenu
-        ? 'NEW BOOKING REQUEST — OFF-MENU / CUSTOM (confirm service & price):'
-        : 'NEW BOOKING REQUEST (not yet in Salon Scheduler):',
+      // The off-menu warning is NOT redundant with the title, so it always shows.
+      b.offMenu ? '⚠️ OFF-MENU / custom — confirm service & price' : null,
       svcStylist,
       ...details,
       'Please enter it in Salon Scheduler to confirm.',
     ];
   }
+
+  if (withHeader) lines = [header, ...lines];
   return lines.filter(Boolean).join('\n');
 }
 
@@ -182,7 +189,8 @@ async function sendPushover(b) {
     token: PUSHOVER_TOKEN,
     user: PUSHOVER_USER,
     title: emergency ? `🚨 TODAY — ${baseTitle}` : baseTitle,
-    message: formatOwnerMessage(b),
+    // No action label in the body — this title already says it (owner's request).
+    message: formatOwnerMessage(b, { header: false }),
     priority: String(emergency ? 2 : 0),
   };
   if (emergency) {
