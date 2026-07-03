@@ -58,14 +58,19 @@ function isSameDayAppointment(b) {
 // phone, and any notes — so the owner can act from the notification alone.
 function formatOwnerMessage(b) {
   const action = b.action || 'book';
-  const name = [b.customer.firstName, b.customer.lastName].filter(Boolean).join(' ') || '(first name only)';
+  // Cap caller-supplied free text so a caller can't blow up SMS segment count or spoof the owner
+  // notification with a wall of text. Applies to the customer name, note, and reason only.
+  const cap = (s) => (s == null ? s : String(s).slice(0, 300));
+  const name = [cap(b.customer.firstName), cap(b.customer.lastName)].filter(Boolean).join(' ') || '(first name only)';
+  const note = cap(b.note);
+  const reason = cap(b.reason);
   const stylist = b.stylist || 'Any available stylist';
   const svcStylist = b.service ? `${b.service} with ${stylist}` : `(service TBD) with ${stylist}`;
   const details = [
     `📅 ${b.when || '(time not given)'}`,
     `👤 ${name}`,
     `📞 ${b.customer.phone || '(no phone captured)'}`,
-    b.note ? `📝 ${b.note}` : null,
+    note ? `📝 ${note}` : null,
   ];
   let lines;
 
@@ -74,7 +79,7 @@ function formatOwnerMessage(b) {
       'CANCELLATION REQUEST (not yet changed in Salon Scheduler):',
       `Appointment to cancel: ${svcStylist}`,
       ...details,
-      b.reason ? `Reason: ${b.reason}` : null,
+      reason ? `Reason: ${reason}` : null,
       'Please cancel it in Salon Scheduler.',
     ];
   } else if (action === 'reschedule') {
@@ -85,7 +90,7 @@ function formatOwnerMessage(b) {
       `To:   ${b.when || '(time not given)'}`,
       `👤 ${name}`,
       `📞 ${b.customer.phone || '(no phone captured)'}`,
-      b.note ? `📝 ${b.note}` : null,
+      note ? `📝 ${note}` : null,
       'Please move it in Salon Scheduler to confirm (deposit may apply).',
     ];
   } else if (action === 'note') {
@@ -95,7 +100,7 @@ function formatOwnerMessage(b) {
       b.when ? `📅 ${b.when}` : null,
       `👤 ${name}`,
       `📞 ${b.customer.phone || '(no phone captured)'}`,
-      `📝 ${b.note}`,
+      `📝 ${note}`,
     ];
   } else {
     lines = [

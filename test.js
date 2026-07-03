@@ -109,6 +109,14 @@ function runUnit() {
   ok(resolveStylist('marcus')?.index === 0, 'marcus -> 0');
   ok(resolveStylist('') === null, 'empty -> any stylist');
   ok(resolveStylist('anyone') === null, 'anyone -> any stylist');
+  // FIX 2: reject unknown stylist names instead of silently booking someone else.
+  const { isUnknownStylist, stylistNames } = require('./src/stylists');
+  ok(resolveStylist('Mark')?.index === 0, 'alias: Mark -> Marcus (0)');
+  ok(isUnknownStylist('Jessica') === true, 'unknown name "Jessica" -> isUnknownStylist true');
+  ok(isUnknownStylist('') === false, 'empty -> not unknown (means "any")');
+  ok(isUnknownStylist('any') === false, '"any" -> not unknown (no preference)');
+  ok(isUnknownStylist('marcus') === false, 'known "marcus" -> not unknown');
+  ok(JSON.stringify(stylistNames()) === JSON.stringify(['Marcus', 'Kelli', 'Patricia', 'Amanda']), 'stylistNames() lists short names in index order');
 
   section('datetime (Pacific/Honolulu)');
   const d = resolveDate('2026-06-16');
@@ -126,6 +134,16 @@ function runUnit() {
   ok(tools.parseClock('12:00 AM') === 0, '12:00 AM (midnight) -> 0');
   ok(tools.parseClock('14:30') === 870, '24h 14:30 -> 870');
   ok(tools.parseClock('garbage') === null, 'garbage -> null');
+  // FIX 1: spoken times + bare-hour PM defaulting (salon runs ~9 AM–7 PM).
+  ok(tools.parseClock('noon') === 720, 'noon -> 720');
+  ok(tools.parseClock('midnight') === 0, 'midnight -> 0');
+  ok(tools.parseClock("2 o'clock") === 840, "2 o'clock -> 840 (2 PM)");
+  ok(tools.parseClock('2') === 840, 'bare 2 -> 840 (2 PM)');
+  ok(tools.parseClock('9') === 540, 'bare 9 -> 540 (9 AM)');
+  ok(tools.parseClock('12') === 720, 'bare 12 -> 720 (noon)');
+  ok(tools.parseClock('2:30') === 870, 'bare 2:30 -> 870 (2:30 PM)');
+  ok(tools.parseClock('2 pm') === 840, '2 pm -> 840 (explicit meridian unchanged)');
+  ok(tools.parseClock('9:15 am') === 555, '9:15 am -> 555 (explicit meridian unchanged)');
 
   section('parseWeekdays');
   const sameSet = (a, b) => !!a && JSON.stringify(a.slice().sort((x, y) => x - y)) === JSON.stringify(b.slice().sort((x, y) => x - y));
@@ -208,6 +226,28 @@ function runUnit() {
   });
   ok(npCancel.Action.select.name === 'Cancel', 'cancel maps to the Cancel action');
   ok(/feeling sick/.test(npCancel.Note.rich_text[0].text.content), 'cancel reason captured in Note');
+
+  section('owner-delivery guard (FIX 3, unit)');
+  // NOTIFY_MODE=return yields channel 'vapi-return' — that MUST count as reached or the whole
+  // suite breaks. A real multi-channel delivery only counts when at least one channel delivered.
+  ok(tools.deliveryReachedOwner({ channel: 'vapi-return', delivered: false }) === true, "vapi-return counts as reached (even if delivered:false)");
+  ok(tools.deliveryReachedOwner({ channel: 'notion+pushover', delivered: false }) === false, 'real channels with no delivery -> not reached');
+  ok(tools.deliveryReachedOwner({ delivered: true, channel: 'notion' }) === true, 'a delivered real channel -> reached');
+  ok(tools.deliveryReachedOwner(null) === false, 'no delivery object -> not reached');
+
+  section('owner message caps caller text (FIX 7, unit)');
+  const { formatOwnerMessage } = require('./src/notify');
+  const bigNote = 'x'.repeat(5000);
+  const capped = formatOwnerMessage({
+    action: 'book',
+    customer: { firstName: 'Jane', lastName: 'Doe', phone: '8085551234' },
+    service: "Women's Cut",
+    when: 'Tuesday at 2 PM',
+    note: bigNote,
+  });
+  const noteLine = capped.split('\n').find((l) => l.startsWith('📝')) || '';
+  const noteText = noteLine.replace(/^📝\s*/, '');
+  ok(noteText.length <= 320, `a 5000-char note is capped to ~300 chars in the owner message (got ${noteText.length})`);
 }
 
 // --------------------------------------------------------------------------- live (network)
@@ -272,6 +312,25 @@ async function runLive() {
   ok(one.ok, 'specific-stylist query succeeds');
   const bad = await tools.checkAvailability({ date: found.iso, service: 'unicorn grooming', stylist: '' });
   ok(!bad.ok && bad.error === 'unknown_service', 'unknown service is reported, not guessed');
+
+  section('LIVE: unknown-stylist / did-you-mean / missing-date guards (FIX 2, 4, 5)');
+  {
+    // FIX 2: naming a stylist we don't have is rejected, not silently routed to someone else.
+    const jessica = await tools.checkAvailability({ date: found.iso, service, stylist: 'Jessica' });
+    ok(!jessica.ok && jessica.error === 'unknown_stylist', 'check_availability rejects an unknown stylist ("Jessica")');
+    ok(/Marcus/.test(jessica.message) && /first available/.test(jessica.message), 'unknown-stylist reply names the roster and offers first-available');
+
+    // FIX 4: an unrelated service must NOT suggest "Women's Cut" as a did-you-mean.
+    const mani = await tools.checkAvailability({ date: found.iso, service: 'manicure', stylist: '' });
+    ok(!mani.ok && mani.error === 'unknown_service', 'unrelated service "manicure" is unknown');
+    ok(!/Women's Cut/.test(mani.message), 'FIX 4: "manicure" does NOT suggest "Women\'s Cut" as a did-you-mean');
+    ok(/special request/i.test(mani.message), '"manicure" is offered as a special request instead');
+
+    // FIX 5: no date must ask for the day, not speak "undefined".
+    const noDate = await tools.checkAvailability({ service });
+    ok(!noDate.ok && noDate.error === 'missing_date', 'check_availability with no date -> missing_date');
+    ok(/what day/i.test(noDate.message), 'missing-date reply asks "what day"');
+  }
 
   section('LIVE: booking is CAPTURE-ONLY (never writes to the salon site)');
   const realFetch = global.fetch;
@@ -488,6 +547,22 @@ async function runLive() {
       cancel.data.delivery.channel === 'vapi-return' && resched.data.delivery.channel === 'vapi-return',
       'cancel/reschedule notify stays return-to-Vapi'
     );
+    // The service-branch reschedule (newDate = found.iso) must carry that date on the booking object,
+    // so isSameDayAppointment can fire when the new date is today.
+    ok(resched.data.reschedule.date === found.iso, 'FIX 6: reschedule booking object carries the NEW appointment date');
+
+    // FIX 6: a same-day reschedule (moving today's appt to later today) must arrive tagged with
+    // today's date so it triggers the repeat-until-ack emergency alert. Use the no-service branch
+    // (no open-slot check) so it captures regardless of today's live availability.
+    const todayHst2 = new Date().toLocaleDateString('en-CA', { timeZone: 'Pacific/Honolulu' });
+    const sameDay = await tools.rescheduleAppointment({
+      firstName: 'Same', lastName: 'Day', phone: '8085550000',
+      currentDate: 'today', currentTime: '1:00 PM', newDate: 'today', newTime: '4:00 PM',
+    });
+    ok(sameDay.ok, 'same-day reschedule (no service) captures');
+    ok(sameDay.data.reschedule.date === todayHst2, `FIX 6: same-day reschedule is dated today (${todayHst2})`);
+    const { isSameDayAppointment } = require('./src/notify');
+    ok(isSameDayAppointment(sameDay.data.reschedule) === true, 'FIX 6: same-day reschedule is flagged same-day (emergency alert fires)');
   }
 
   section('LIVE: add_appointment_note captures WITHOUT re-booking (the note-bug fix)');

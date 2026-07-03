@@ -22,10 +22,23 @@ const moment = require('moment-timezone');
 const { getAvailability, findEarliest, findNextDays } = require('./src/availabilityEngine');
 const { getSalonData } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
-const { resolveStylist } = require('./src/stylists');
+const { resolveStylist, isUnknownStylist, stylistNames } = require('./src/stylists');
 const { resolveServices, resolveAmong, formatPrice } = require('./src/services');
 const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
+
+// ---------- owner-delivery guard ----------
+
+// Did the captured request actually reach an owner channel? notifyOwner returns channel
+// 'vapi-return' when nothing is configured (tests + the Vapi-delivers-it path) — that COUNTS as
+// reached (Vapi speaks/forwards it). For real channels (notion/pushover/telnyx), require that at
+// least one actually delivered; if every channel failed, the booking exists only in a log line and
+// the assistant must NOT tell the caller the salon has it.
+function deliveryReachedOwner(delivery) {
+  if (!delivery) return false;
+  if (delivery.channel === 'vapi-return') return true;
+  return !!delivery.delivered;
+}
 
 // ---------- small speech/format helpers ----------
 
@@ -80,20 +93,29 @@ function slotUnavailableMessage(r, requested, requestedTime, whenLabel) {
   return `Sorry, ${requestedTime} isn't available${requested ? ` with ${requested.full}` : ''} on ${whenLabel}.${alt}`;
 }
 
-// "9:15 am" / "9 am" / "2:30pm" / "14:30" -> minutes since midnight, or null.
+// "9:15 am" / "9 am" / "2:30pm" / "14:30" / "noon" / "2 o'clock" -> minutes since midnight, or null.
 function parseClock(input) {
   if (input == null) return null;
   if (typeof input === 'number' && input >= 0 && input < 1440) return input;
-  const m = String(input)
-    .trim()
-    .toLowerCase()
-    .match(/^(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?$/);
+  let s = String(input).trim().toLowerCase();
+  // Spoken times the salon hears a lot but the numeric matcher can't handle.
+  if (s === 'noon' || s === '12 noon' || s === 'midday' || s === 'mid-day') return 720;
+  if (s === 'midnight') return 0;
+  // Strip a trailing "o'clock"/"oclock" so "2 o'clock" parses as a bare "2".
+  s = s.replace(/\s*o'?clock$/, '').trim();
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?$/);
   if (!m) return null;
   let h = parseInt(m[1], 10);
   const min = m[2] ? parseInt(m[2], 10) : 0;
   const mer = m[3] ? m[3].replace(/\./g, '') : null;
   if (mer === 'pm' && h < 12) h += 12;
-  if (mer === 'am' && h === 12) h = 0;
+  else if (mer === 'am' && h === 12) h = 0;
+  else if (!mer) {
+    // No am/pm marker: the salon runs ~9 AM–7 PM, so a spoken "2" (or "2:30") means 2 PM and "9"
+    // means 9 AM. 1–7 -> PM; 8–11 stay AM; 12 is already noon; 0 stays midnight; 13–23 (24h)
+    // stay as-is. This defaulting applies whether or not minutes were given.
+    if (h >= 1 && h <= 7) h += 12;
+  }
   if (h > 23 || min > 59) return null;
   return h * 60 + min;
 }
@@ -201,6 +223,19 @@ function speakNextDays(days) {
 // ---------- Tool 1: check_availability ----------
 
 async function checkAvailability(args = {}) {
+  // Without a date we'd speak "...on undefined". Ask for the day first.
+  if (!args.date || !String(args.date).trim()) {
+    return { ok: false, error: 'missing_date', message: 'Sure — what day were you thinking?' };
+  }
+  // A caller who names a stylist we don't have ("book with Jessica") must be told, not silently
+  // routed to whoever's first. "any"/"no preference"/blank are fine and fall through.
+  if (isUnknownStylist(args.stylist)) {
+    return {
+      ok: false,
+      error: 'unknown_stylist',
+      message: `I don't have a stylist by that name. Our stylists are ${speakOr(stylistNames())} — who would you like, or should I go with the first available?`,
+    };
+  }
   const requested = resolveStylist(args.stylist);
   // Time-of-day constraint ("after 2 PM"), parsed to minutes and enforced server-side.
   const afterMin = parseClock(args.afterTime);
@@ -221,8 +256,15 @@ async function checkAvailability(args = {}) {
 
   if (!r.ok) {
     let message = r.message;
-    if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
-      message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+    if (r.error === 'unknown_service') {
+      // Only offer "did you mean …?" for a genuinely ambiguous menu service. For an unrelated
+      // input ("manicure") there's no real overlap — say it isn't listed and can be a special
+      // request, matching bookAppointment's off-menu tone (no capture happens here).
+      if (r.ambiguous && r.candidates && r.candidates.length) {
+        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+      } else {
+        message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
+      }
     }
     return { ok: false, error: r.error, message, data: r };
   }
@@ -313,6 +355,14 @@ async function bookAppointment(args = {}) {
       data: { phone: args.phone },
     };
   }
+  // Don't silently book a different stylist when the caller named one we don't have.
+  if (isUnknownStylist(args.stylist)) {
+    return {
+      ok: false,
+      error: 'unknown_stylist',
+      message: `I don't have a stylist by that name. Our stylists are ${speakOr(stylistNames())} — who would you like, or should I go with the first available?`,
+    };
+  }
 
   const requested = resolveStylist(args.stylist);
 
@@ -372,6 +422,14 @@ async function bookAppointment(args = {}) {
           durationMinutes: 60,
           meta: { name: fullName(booking.customer), service: booking.service, offMenu: true },
         }).catch(() => {});
+      }
+      if (!deliveryReachedOwner(delivery)) {
+        console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+        return {
+          ok: true,
+          message: `I've written down your ${booking.service}${when.text ? ' for ' + when.text : ''}, but I'm having trouble reaching the salon's system this second — please call the salon directly to confirm, or try me again in a few minutes.`,
+          data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
+        };
       }
       return {
         ok: true,
@@ -443,6 +501,17 @@ async function bookAppointment(args = {}) {
     meta: { name: fullName(booking.customer), service: booking.service },
   }).catch(() => {});
 
+  if (!deliveryReachedOwner(delivery)) {
+    console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+    return {
+      ok: true,
+      message:
+        `I've written down your ${booking.service} with ${booking.stylist}${booking.when ? ' for ' + booking.when : ''}, ` +
+        `but I'm having trouble reaching the salon's system this second — please call the salon directly to confirm, or try me again in a few minutes.`,
+      data: { booking, delivery, ownerMessage: formatOwnerMessage(booking) },
+    };
+  }
+
   return {
     ok: true,
     message:
@@ -492,6 +561,14 @@ async function cancelAppointment(args = {}) {
   };
 
   const delivery = await notifyOwner(cancellation);
+  if (!deliveryReachedOwner(delivery)) {
+    console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+    return {
+      ok: true,
+      message: `I've written down your cancellation${when.text ? ' for ' + when.text : ''}, but I'm having trouble reaching the salon's system this second — please call the salon directly to confirm, or try me again in a few minutes.`,
+      data: { cancellation, delivery, ownerMessage: formatOwnerMessage(cancellation) },
+    };
+  }
   return {
     ok: true,
     message: `Okay — I've sent a cancellation request for ${when.text} to the salon, and they'll take care of it.`,
@@ -529,6 +606,14 @@ async function addAppointmentNote(args = {}) {
   };
   const delivery = await notifyOwner(noteRequest);
   const forWhom = when.text ? ` to your ${when.text} appointment` : ' to your appointment';
+  if (!deliveryReachedOwner(delivery)) {
+    console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+    return {
+      ok: true,
+      message: `I've written down your note${forWhom}, but I'm having trouble reaching the salon's system this second — please call the salon directly to confirm, or try me again in a few minutes.`,
+      data: { note: noteRequest, delivery, ownerMessage: formatOwnerMessage(noteRequest) },
+    };
+  }
   return {
     ok: true,
     message: `Got it — I've added that note${forWhom}, and the salon will see it. Anything else?`,
@@ -547,12 +632,21 @@ async function rescheduleAppointment(args = {}) {
       data: { missing },
     };
   }
+  // Don't silently route to a different stylist when the caller named one we don't have.
+  if (isUnknownStylist(args.stylist)) {
+    return {
+      ok: false,
+      error: 'unknown_stylist',
+      message: `I don't have a stylist by that name. Our stylists are ${speakOr(stylistNames())} — who would you like, or should I go with the first available?`,
+    };
+  }
 
   const requested = resolveStylist(args.stylist);
   const fromWhen = describeWhen(args.currentDate, args.currentTime).text;
   let serviceName = args.service ? String(args.service).trim() : null;
   let stylistName = requested ? requested.full : args.stylist ? String(args.stylist).trim() : null;
   let newWhen;
+  let newDateIso = null; // NEW appointment's ISO date — drives the same-day emergency alert.
   let newHold = null;
 
   // If we know the service, verify the NEW slot is actually open (same guard as booking).
@@ -567,8 +661,12 @@ async function rescheduleAppointment(args = {}) {
     });
     if (!r.ok) {
       let message = r.message;
-      if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
-        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+      if (r.error === 'unknown_service') {
+        if (r.ambiguous && r.candidates && r.candidates.length) {
+          message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+        } else {
+          message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
+        }
       }
       return { ok: false, error: r.error, message, data: r };
     }
@@ -596,6 +694,7 @@ async function rescheduleAppointment(args = {}) {
     serviceName = r.service.name;
     stylistName = chosen.stylist.stylist;
     newWhen = `${whenLabel} at ${chosen.slot.time} (HST)`;
+    newDateIso = r.date;
     newHold = {
       dateIso: r.date,
       stylistIndex: chosen.stylist.stylistIndex,
@@ -604,7 +703,9 @@ async function rescheduleAppointment(args = {}) {
     };
   } else {
     // No service stated — capture without the open-slot check; the owner validates.
-    newWhen = describeWhen(args.newDate, args.newTime).text;
+    const dw = describeWhen(args.newDate, args.newTime);
+    newWhen = dw.text;
+    newDateIso = dw.iso;
   }
 
   const reschedule = {
@@ -613,6 +714,9 @@ async function rescheduleAppointment(args = {}) {
     customer: customerFrom(args),
     service: serviceName,
     stylist: stylistName,
+    // The NEW appointment's ISO date — without it isSameDayAppointment can't fire the
+    // repeat-until-ack emergency alert for a same-day move ("move my 1 PM today to 4 PM today").
+    date: newDateIso,
     fromWhen,
     when: newWhen,
     note: args.note ? String(args.note).trim() : null,
@@ -626,6 +730,15 @@ async function rescheduleAppointment(args = {}) {
       ...newHold,
       meta: { name: fullName(reschedule.customer), action: 'reschedule' },
     }).catch(() => {});
+  }
+
+  if (!deliveryReachedOwner(delivery)) {
+    console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+    return {
+      ok: true,
+      message: `I've written down your reschedule${newWhen ? ' to ' + newWhen : ''}, but I'm having trouble reaching the salon's system this second — please call the salon directly to confirm, or try me again in a few minutes.`,
+      data: { reschedule, delivery, ownerMessage: formatOwnerMessage(reschedule) },
+    };
   }
 
   return {
@@ -644,6 +757,14 @@ async function findEarliestAvailability(args = {}) {
       error: 'missing_fields',
       message: 'Which service are you looking for?',
       data: { missing: ['service'] },
+    };
+  }
+  // Don't silently search a different stylist when the caller named one we don't have.
+  if (isUnknownStylist(args.stylist)) {
+    return {
+      ok: false,
+      error: 'unknown_stylist',
+      message: `I don't have a stylist by that name. Our stylists are ${speakOr(stylistNames())} — who would you like, or should I go with the first available?`,
     };
   }
   // Time-of-day constraint ("after 2 PM"), parsed to minutes and enforced server-side. The
@@ -671,8 +792,12 @@ async function findEarliestAvailability(args = {}) {
   });
   if (!r.ok) {
     let message = r.message;
-    if (r.error === 'unknown_service' && r.candidates && r.candidates.length) {
-      message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+    if (r.error === 'unknown_service') {
+      if (r.ambiguous && r.candidates && r.candidates.length) {
+        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+      } else {
+        message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
+      }
     }
     return { ok: false, error: r.error, message, data: r };
   }
@@ -829,7 +954,7 @@ async function resolveServicePhrase(args = {}) {
   };
 }
 
-// parseClock is exported for unit tests.
+// parseClock and deliveryReachedOwner are exported for unit tests.
 module.exports = {
   checkAvailability,
   bookAppointment,
@@ -841,4 +966,5 @@ module.exports = {
   resolveServicePhrase,
   parseClock,
   parseWeekdays,
+  deliveryReachedOwner,
 };

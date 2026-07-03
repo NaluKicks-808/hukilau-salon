@@ -8,7 +8,7 @@
  */
 
 const STYLISTS = [
-  { index: 0, full: 'Marcus', short: 'Marcus', aliases: ['marcus'] },
+  { index: 0, full: 'Marcus', short: 'Marcus', aliases: ['marcus', 'mark', 'marc'] },
   { index: 1, full: 'Kelli', short: 'Kelli', aliases: ['kelli', 'kelly', 'kellie', 'kelley'] },
   {
     index: 2,
@@ -69,6 +69,21 @@ function resolveStylist(input) {
   return null;
 }
 
+// True only when the caller actually named a stylist we don't recognize — NOT for "any"/"no
+// preference" (those legitimately resolve to null) and NOT for an empty/blank input. Lets the
+// booking tools reject "book with Jessica" instead of silently assigning the first stylist.
+function isUnknownStylist(input) {
+  const n = normalize(input);
+  if (!n) return false;
+  if (NO_PREFERENCE.has(n)) return false;
+  return resolveStylist(input) === null;
+}
+
+// The short names in salon index order — for offering the caller our roster.
+function stylistNames() {
+  return STYLISTS.map((s) => s.short);
+}
+
 function byIndex(index) {
   return STYLISTS.find((s) => s.index === index) || null;
 }
@@ -83,4 +98,4 @@ function shortName(index) {
   return s ? s.short : `Stylist ${index}`;
 }
 
-module.exports = { STYLISTS, resolveStylist, byIndex, displayName, shortName };
+module.exports = { STYLISTS, resolveStylist, isUnknownStylist, stylistNames, byIndex, displayName, shortName };

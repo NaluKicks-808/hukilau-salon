@@ -40,6 +40,7 @@ const { getSalonData, prefetchAppointments } = require('./src/salonClient');
 
 const PORT = process.env.PORT || 8787;
 const VAPI_SECRET = process.env.VAPI_SECRET || '';
+const CRON_SECRET = process.env.CRON_SECRET || '';
 
 const TOOLS = {
   check_availability: checkAvailability,
@@ -58,7 +59,7 @@ const TOOLS = {
 };
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '128kb' }));
 
 function checkSecret(req, res) {
   if (!VAPI_SECRET) return true; // auth disabled
@@ -101,7 +102,9 @@ function maskPhone(args) {
 async function handleToolRequest(req, res, defaultTool) {
   if (!checkSecret(req, res)) return;
   const callId = req.body && req.body.message && req.body.message.call && req.body.message.call.id;
-  const calls = extractToolCalls(req.body);
+  // Cap fan-out: one request can carry many tool calls, each of which may fire Pushover/Telnyx/
+  // Notion. Process at most the first 10 so a crafted request can't amplify into thousands of sends.
+  const calls = extractToolCalls(req.body).slice(0, 10);
 
   if (!calls.length && defaultTool) {
     // Allow a bare {date,service,stylist} body for easy manual testing of a route.
@@ -164,8 +167,12 @@ app.post('/vapi/service-info', (req, res) => handleToolRequest(req, res, 'get_se
 app.post('/vapi/resolve-service', (req, res) => handleToolRequest(req, res, 'resolve_service'));
 
 // Warm the caches (salon config + today..+2 days of appointments) to avoid cold-start lag.
-// Hit by the Vercel keep-warm cron; also usable as a manual ping.
+// Hit by the Vercel keep-warm cron; also usable as a manual ping. Authenticated: it force-pulls the
+// salon backend, so require the Vapi secret OR the cron secret (when CRON_SECRET is set). If no
+// secret is configured, checkSecret bypasses — behavior is unchanged until secrets are set.
 app.get('/warm', async (req, res) => {
+  const cronOk = !!CRON_SECRET && req.get('x-cron-secret') === CRON_SECRET;
+  if (!cronOk && !checkSecret(req, res)) return;
   try {
     await getSalonData();
     const warmed = await prefetchAppointments();
@@ -193,15 +200,19 @@ app.post('/vapi/events', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({ ok: true, service: 'hukilau-receptionist' }));
-app.get('/health', (req, res) =>
+app.get('/health', (req, res) => {
+  // Don't enumerate the notify channels here (e.g. "notion+pushover+telnyx") — that's recon for
+  // which paid channels to abuse. A boolean is enough for the owner to verify setup. MODE is
+  // 'return' only when NO owner channel is configured, so any real channel makes this true.
+  const notifyConfigured = require('./src/notify').MODE !== 'return';
   res.json({
     ok: true,
     tz: process.env.TZ,
     authEnabled: !!VAPI_SECRET,
     holdsStore: require('./src/pendingHolds').isConfigured(),
-    notify: require('./src/notify').MODE,
-  })
-);
+    notifyConfigured,
+  });
+});
 
 if (require.main === module) {
   app.listen(PORT, () => {
