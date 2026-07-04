@@ -355,6 +355,42 @@ function runUnit() {
     ok(page.includes('123ms') && page.includes('Hukilau'), 'ops page renders the salon probe + branding');
     ok(page.includes('OPS_KEY'), 'ops page hints at setting OPS_KEY when the page is open');
   }
+
+  section('call archive — Notion mapping (unit)');
+  {
+    const { buildCallMeta, isConfigured, durationSecondsOf, chunkText } = require('./src/callArchive');
+    const saved = { k: process.env.NOTION_API_KEY, d: process.env.NOTION_CALLS_DB_ID };
+    delete process.env.NOTION_CALLS_DB_ID;
+    process.env.NOTION_API_KEY = process.env.NOTION_API_KEY || 'secret_test';
+    ok(isConfigured() === false, 'archive is OFF until NOTION_CALLS_DB_ID is set (safe to ship first)');
+    process.env.NOTION_CALLS_DB_ID = 'db_test';
+    ok(isConfigured() === true, 'archive is ON with NOTION_API_KEY + NOTION_CALLS_DB_ID');
+
+    const report = {
+      endedReason: 'silence-timed-out',
+      startedAt: '2026-07-03T22:00:00.000Z',
+      endedAt: '2026-07-03T22:00:13.000Z',
+      cost: 0.0421,
+      call: { id: 'call_abc' },
+      analysis: { successEvaluation: 'false', summary: 'Caller went silent after the greeting.' },
+      artifact: { transcript: 'AI: Aloha!\nUser: hi\n' + 'x'.repeat(4000) },
+    };
+    ok(durationSecondsOf(report) === 13, 'duration falls back to endedAt - startedAt');
+    const meta = buildCallMeta(report);
+    ok(meta.properties.Flagged.checkbox === true, 'archive flags with the SAME classifier as the alerts');
+    ok(meta.properties['Ended Reason'].select.name === 'silence-timed-out', 'ended reason maps to the select column');
+    ok(meta.properties['Duration (s)'].number === 13 && meta.properties.Cost.number === 0.0421, 'duration + cost land as numbers');
+    ok(meta.properties['Call ID'].rich_text[0].text.content === 'call_abc', 'call id is stored for cross-referencing Vapi');
+    ok(meta.title.includes('13s') && meta.title.includes('🚩'), 'page title carries duration and the flag');
+    const paras = meta.children.filter((b) => b.type === 'paragraph');
+    ok(meta.children[0].type === 'heading_2' && paras.length >= 3, 'long transcript is chunked into multiple body blocks');
+    ok(paras.every((b) => b.paragraph.rich_text[0].text.content.length <= 1900), 'every transcript chunk fits Notion 2000-char limit');
+    const bare = buildCallMeta({ endedReason: 'customer-ended-call' });
+    ok(bare.properties.Flagged.checkbox === false && /no transcript/.test(bare.children[1].paragraph.rich_text[0].text.content), 'clean call, no transcript -> unflagged page with a fallback note');
+    ok(chunkText('abcd', 2).length === 2, 'chunkText splits on the boundary');
+    if (saved.k === undefined) delete process.env.NOTION_API_KEY; else process.env.NOTION_API_KEY = saved.k;
+    if (saved.d === undefined) delete process.env.NOTION_CALLS_DB_ID; else process.env.NOTION_CALLS_DB_ID = saved.d;
+  }
 }
 
 // --------------------------------------------------------------------------- live (network)

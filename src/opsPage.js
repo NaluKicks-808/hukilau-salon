@@ -78,6 +78,7 @@ function renderOpsPage(m) {
     statusCard('Owner alerts', !!h.notifyConfigured, h.notifyConfigured ? 'configured' : 'NOT configured'),
     statusCard('Ops alerts (Evan)', !!h.opsConfigured, h.opsConfigured ? 'configured' : 'set PUSHOVER_DEV_USER'),
     statusCard('Event log', !!h.opsLog, h.opsLog ? 'recording' : 'no Redis — history off'),
+    statusCard('Call archive', !!h.archive, h.archive ? 'Notion Call Log' : 'set NOTION_CALLS_DB_ID — calls NOT retained'),
   ].join('');
   const actions = Object.entries(today.byAction || {})
     .map(([k, v]) => `${v} ${escapeHtml(k)}`)

@@ -41,6 +41,7 @@ const { alertOps, opsConfigured } = require('./src/opsAlert');
 const { buildCallReviewAlert, callEndedBadly, durationLabel, callIdOf } = require('./src/callReview');
 const opsLog = require('./src/opsLog');
 const { renderOpsPage } = require('./src/opsPage');
+const callArchive = require('./src/callArchive');
 
 const PORT = process.env.PORT || 8787;
 const VAPI_SECRET = process.env.VAPI_SECRET || '';
@@ -64,7 +65,12 @@ const TOOLS = {
 };
 
 const app = express();
-app.use(express.json({ limit: '128kb' }));
+// Tool calls stay hard-capped at 128kb, but end-of-call reports legitimately carry a full
+// transcript + message history and can exceed it — a 413 there would silently lose the call's
+// alert AND its archive row. Exactly one parser runs per request.
+const jsonSmall = express.json({ limit: '128kb' });
+const jsonLarge = express.json({ limit: '1mb' });
+app.use((req, res, next) => (req.path === '/vapi/events' ? jsonLarge : jsonSmall)(req, res, next));
 
 function checkSecret(req, res) {
   if (!VAPI_SECRET) return true; // auth disabled
@@ -234,6 +240,8 @@ app.post('/vapi/events', async (req, res) => {
       });
       const alert = buildCallReviewAlert(msg);
       if (alert) await alertOps(alert.title, alert.message, alert.opts);
+      // Permanent archive (Notion Call Log) — Vapi purges call data in days; this copy is forever.
+      await callArchive.archiveCall(msg);
     } catch (_) {
       /* best effort — never fail the webhook over an alert */
     }
@@ -280,6 +288,7 @@ app.get('/ops', async (req, res) => {
       notifyConfigured: require('./src/notify').MODE !== 'return',
       opsConfigured: opsConfigured(),
       opsLog: opsLog.isConfigured(),
+      archive: callArchive.isConfigured(),
     },
     probe,
     today: opsLog.computeDigest(events, opsLog.todayHst()),
@@ -325,6 +334,7 @@ app.get('/health', (req, res) => {
     authEnabled: !!VAPI_SECRET,
     holdsStore: require('./src/pendingHolds').isConfigured(),
     notifyConfigured,
+    callArchive: callArchive.isConfigured(),
   });
 });
 

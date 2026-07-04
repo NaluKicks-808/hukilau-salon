@@ -78,6 +78,22 @@ async function logEvent(type, data) {
   }
 }
 
+/**
+ * True the FIRST time `key` is seen within ttlSec (Redis SET NX EX) — used to dedupe webhook
+ * retries. Fail-open: returns true when Redis is unconfigured or erroring, because the callers
+ * prefer a rare duplicate over silently dropping work.
+ */
+async function onceOnly(key, ttlSec) {
+  const c = getClient();
+  if (!c || !key) return true;
+  try {
+    const r = await c.set(key, '1', { nx: true, ex: ttlSec });
+    return r === 'OK' || r === true;
+  } catch (_) {
+    return true;
+  }
+}
+
 /** Newest-first events, parsed. Empty array when unconfigured or on any error. */
 async function recentEvents(limit = 100) {
   const c = getClient();
@@ -156,6 +172,7 @@ function formatDigest(digest, dayIso, extra = {}) {
 module.exports = {
   logEvent,
   recentEvents,
+  onceOnly,
   isConfigured,
   hstDayOf,
   todayHst,

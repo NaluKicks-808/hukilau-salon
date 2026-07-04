@@ -305,6 +305,8 @@ async function notifyOwner(booking) {
     if (!result.delivered) {
       logEvent('owner_fail', { action: booking.action || 'book', channels: result.channel }).catch(() => {});
     }
+    // (No separate capture archive: the Booking Requests Notion database IS the permanent record
+    // of captures — service, stylist, when, action — and feeds the monthly report directly.)
   } catch (_) {
     /* the log must never break delivery */
   }
