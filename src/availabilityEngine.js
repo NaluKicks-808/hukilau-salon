@@ -99,24 +99,30 @@ async function getAvailability(args) {
   const data = await loadAndConfigure();
   const tz = data.jsonMerchant.timezone;
 
-  // resolveFutureDate: a past date here is always a mistake (live incident: the voice model
-  // stamped LAST year onto "Monday, July 6" -> "2024-07-06", got a past_date error, and
-  // looped retrying). Roll it to the next future occurrence instead of erroring.
+  // Every date error states TODAY'S date (in words, not ISO digits, so it isn't read aloud as
+  // "twenty-twenty-six dash..."). The voice model doesn't know the current date; giving it an
+  // anchor lets it recompute a relative date instead of re-sending the same wrong one and
+  // looping (live incident: "next week Wednesday" -> hallucinated 2023-11-15).
+  const today = todayParts(tz);
+  const speak = (iso) => moment(iso, 'YYYY-MM-DD').format('dddd, MMMM D, YYYY');
+  const todayStr = speak(today.iso);
+
+  // resolveFutureDate rolls a past date to its next future occurrence (fixes a wrong YEAR); a
+  // fully unparseable date still errors.
   const d = resolveFutureDate(args.date, tz);
   if (!d) {
-    return { ok: false, error: 'bad_date', message: `I couldn't understand the date "${args.date}".` };
+    return { ok: false, error: 'bad_date', message: `I didn't catch that date. Today is ${todayStr} — what day would you like?` };
   }
   if (d.rolled) console.warn(`date rolled forward: "${args.date}" (${d.originalIso}) -> ${d.iso}`);
 
-  const today = todayParts(tz);
   if (d.startMs < today.startMs) {
-    return { ok: false, error: 'past_date', message: `${d.iso} is in the past.` };
+    return { ok: false, error: 'past_date', message: `That date has already passed. Today is ${todayStr} — what day works for you?` };
   }
   if (d.startMs > maxBookingMs(data.monthsx, tz)) {
     return {
       ok: false,
       error: 'out_of_window',
-      message: `We only book about ${data.monthsx} months ahead, so I can't check ${d.iso} yet.`,
+      message: `Today is ${todayStr}, and I can only book about ${data.monthsx} months out, so I can't check ${speak(d.iso)} yet. What day would you like?`,
     };
   }
 

@@ -20,6 +20,18 @@ function pad(n) {
   return String(n).padStart(2, '0');
 }
 
+// chrono resolves "next Wednesday" perfectly but fumbles "next week Wednesday" (it returns a
+// day of the wrong weekday). Collapse "next week <weekday>" / "<weekday> next week" to
+// "next <weekday>" so the caller's phrase resolves to the right day. Only touches these
+// specific patterns; all other phrasings pass through unchanged.
+const WEEKDAY = '(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)';
+function normalizeRelative(s) {
+  return String(s)
+    .replace(new RegExp('\\bnext week\\s+' + WEEKDAY + '\\b', 'i'), 'next $1')
+    .replace(new RegExp('\\b' + WEEKDAY + '\\s+next week\\b', 'i'), 'next $1')
+    .replace(new RegExp('\\bthis week\\s+' + WEEKDAY + '\\b', 'i'), 'this $1');
+}
+
 function partsFromMoment(m, tz) {
   return {
     year: m.year(),
@@ -52,7 +64,7 @@ function resolveDate(input, tz = DEFAULT_TZ) {
 
   // Natural language. Reference = "now" in the salon tz; prefer future dates.
   const refNow = moment.tz(tz).toDate();
-  const parsed = chrono.parseDate(s, refNow, { forwardDate: true });
+  const parsed = chrono.parseDate(normalizeRelative(s), refNow, { forwardDate: true });
   if (!parsed) return null;
   const m = moment.tz(parsed, tz);
   if (!m.isValid()) return null;

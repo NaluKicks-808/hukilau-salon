@@ -139,6 +139,16 @@ function runUnit() {
   ok(fut && fut.rolled === false && fut.iso === '2026-12-25', 'future date passes through unrolled');
   ok(resolveFutureDate('yesterday').rolled === true, 'natural-language past date also rolls forward');
 
+  // REGRESSION (live call 019f2a68): caller said "next week Wednesday"; the model hallucinated
+  // 2023-11-15. chrono alone mis-resolves "next week Wednesday" to a Friday, so we normalize
+  // "next week <weekday>" -> "next <weekday>". It must resolve to a Wednesday, same as the clean
+  // phrasing, and be in the future.
+  const nww = resolveDate('next week Wednesday');
+  ok(!!nww && nww.weekday === 'Wednesday', '"next week Wednesday" resolves to a Wednesday (not Friday)');
+  ok(nww && nww.iso === resolveDate('next Wednesday').iso, '"next week Wednesday" == "next Wednesday"');
+  ok(nww && nww.startMs > tp().startMs, '"next week Wednesday" is in the future');
+  ok(resolveDate('Monday next week').weekday === 'Monday', '"Monday next week" resolves to a Monday');
+
   section('parseClock');
   ok(tools.parseClock('9:15 AM') === 555, '9:15 AM -> 555');
   ok(tools.parseClock('2:30 pm') === 870, '2:30 pm -> 870');
