@@ -5,8 +5,9 @@ calls this server for every tool the assistant uses: checking availability, book
 rescheduling, price quotes, service-name resolution, and post-booking notes.
 
 - **Live:** https://salon.pointy.help (Vercel project `hukilau-salon`, auto-deploys on push to `main`)
-- **Health:** `GET /health` → shows timezone, holds store, and active notify channels
-- **Tests:** `node test.js` (live read-only against the real salon calendar + unit tests; ~156 assertions)
+- **Health:** `GET /health` → tz + holds/notify/archive booleans · **`GET /ops`** → operator status
+  page (health lights incl. live salon-site probe, today's counts, recent-call feed)
+- **Tests:** `node test.js` (live read-only against the real salon calendar + unit tests; 241 assertions)
 - **Client:** Hukilau Salon, Polynesian Cultural Center / Hukilau Marketplace, Lā‘ie.
   Stylists: Marcus, Kelli, Patricia, Amanda. Timezone: Pacific/Honolulu everywhere (no DST).
 
@@ -48,13 +49,23 @@ rescheduling, price quotes, service-name resolution, and post-booking notes.
 - `src/pendingHolds.js` — Upstash Redis 36h slot holds so two callers can't capture the same slot.
 - `src/salonClient.js` — fetches/caches salon config + booked appointments (`getappt.php`, unix-ms
   range POST). `scripts/analyze-history.js` can pull ~6 months of real appointment history.
+- `src/opsAlert.js` + `src/callReview.js` + `src/opsLog.js` + `src/opsPage.js` — OPERATOR monitoring
+  (pages Evan via `PUSHOVER_DEV_USER`, NEVER the owner): ⚠️ tool errors, 📞 bad calls (end-of-call
+  report with abnormal endedReason OR negative successEvaluation; normal hang-ups silent), 🚨 capture
+  that reached zero owner channels (emergency + full handoff). Rolling Redis event feed (no customer
+  PII) powers `GET /ops` and the daily 7:00 AM HST digest (`/ops/digest`, vercel.json cron 17:00 UTC).
+- `src/callArchive.js` — permanent archive: every end-of-call report → one page in the Notion
+  "📞 Call Log" DB (outcome properties + transcript chunked in the body, Redis SET NX dedupe on
+  retries). Vapi purges call data in days; this copy is forever and feeds the monthly client report.
 
 ## Env vars (set in Vercel, hukilau-salon project)
 
-`NOTION_API_KEY` + `NOTION_DATABASE_ID` (Booking Requests DB) · `PUSHOVER_TOKEN` + `PUSHOVER_USER`
-(owner alerts — ⚠️ as of 2026-07-02 PUSHOVER_USER is Evan's personal key for testing; swap to the
-owner's key or a Pushover Delivery Group before/at signing) · `TELNYX_API_KEY`/`TELNYX_FROM`/
-`OWNER_PHONE` (SMS; toll-free verification pending) · Upstash Redis pair · optional `VAPI_SECRET`.
+`NOTION_API_KEY` + `NOTION_DATABASE_ID` (Booking Requests DB) + `NOTION_CALLS_DB_ID` (Call Log
+archive) · `PUSHOVER_TOKEN` + `PUSHOVER_USER` (✅ the OWNER's delivery-group key since 2026-07-03) ·
+`PUSHOVER_DEV_USER` (Evan's ops-alert key; optional `PUSHOVER_DEV_TOKEN`) · `TELNYX_API_KEY`/
+`TELNYX_FROM`/`OWNER_PHONE` (SMS) · Upstash Redis pair (slot holds + ops events) · optional:
+`VAPI_SECRET` (user declined for now — webhook open by choice), `OPS_KEY` + `CRON_SECRET`
+(set BOTH together or the digest cron starts 401ing).
 
 ## Gotchas learned the hard way
 
@@ -65,3 +76,7 @@ owner's key or a Pushover Delivery Group before/at signing) · `TELNYX_API_KEY`/
   every call logs `evt:tool_call` with delivery details.
 - The salon deleted/renamed services before — `npm run audit` (scripts/) lists stylist/service gaps.
 - Keep `moment.tz.setDefault('Pacific/Honolulu')` parity when touching vendor code.
+- `/vapi/events` accepts 1mb bodies (full-transcript end-of-call reports 413'd at the global 128kb
+  cap and silently lost alert + archive); every other route stays hard-capped at 128kb.
+- Vapi runs a successEvaluation on EVERY call — a "hi" + hang-up rates unsuccessful and pages Evan
+  BY DESIGN during watch-week. If it gets noisy: digest-only for eval-flags, or a ~20s duration floor.
