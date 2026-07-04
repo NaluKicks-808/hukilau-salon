@@ -270,6 +270,50 @@ function runUnit() {
   const noteLine = capped.split('\n').find((l) => l.startsWith('📝')) || '';
   const noteText = noteLine.replace(/^📝\s*/, '');
   ok(noteText.length <= 320, `a 5000-char note is capped to ~300 chars in the owner message (got ${noteText.length})`);
+
+  section('ops alerting — config gate + call review (monitoring, unit)');
+  {
+    const { opsConfigured } = require('./src/opsAlert');
+    const { callEndedBadly, buildCallReviewAlert } = require('./src/callReview');
+
+    // Config gate: operator alerts are a safe no-op until PUSHOVER_DEV_USER exists, so the code can
+    // ship to production before the key is added. Toggle env around the checks, then restore it.
+    const saved = { u: process.env.PUSHOVER_DEV_USER, dt: process.env.PUSHOVER_DEV_TOKEN, t: process.env.PUSHOVER_TOKEN };
+    delete process.env.PUSHOVER_DEV_USER;
+    delete process.env.PUSHOVER_DEV_TOKEN;
+    delete process.env.PUSHOVER_TOKEN;
+    ok(opsConfigured() === false, 'ops channel is OFF when PUSHOVER_DEV_USER is unset (safe to ship early)');
+    process.env.PUSHOVER_DEV_USER = 'uEVAN';
+    ok(opsConfigured() === false, 'ops channel still OFF with a recipient but no app token');
+    process.env.PUSHOVER_TOKEN = 'aAPP';
+    ok(opsConfigured() === true, 'ops channel ON once recipient + token exist (reuses PUSHOVER_TOKEN)');
+    delete process.env.PUSHOVER_TOKEN;
+    process.env.PUSHOVER_DEV_TOKEN = 'aDEV';
+    ok(opsConfigured() === true, 'a dedicated PUSHOVER_DEV_TOKEN also satisfies the gate');
+    if (saved.u === undefined) delete process.env.PUSHOVER_DEV_USER; else process.env.PUSHOVER_DEV_USER = saved.u;
+    if (saved.dt === undefined) delete process.env.PUSHOVER_DEV_TOKEN; else process.env.PUSHOVER_DEV_TOKEN = saved.dt;
+    if (saved.t === undefined) delete process.env.PUSHOVER_TOKEN; else process.env.PUSHOVER_TOKEN = saved.t;
+
+    // Call review: normal hang-ups stay silent; abnormal endings page the operator.
+    ok(callEndedBadly({ endedReason: 'customer-ended-call' }).bad === false, 'a normal customer hang-up is NOT flagged');
+    ok(callEndedBadly({ endedReason: 'assistant-ended-call' }).bad === false, 'a normal assistant end is NOT flagged');
+    ok(buildCallReviewAlert({ endedReason: 'customer-ended-call', call: { id: 'c1' } }) === null, 'no alert built for a clean call');
+    ok(callEndedBadly({ endedReason: 'pipeline-error-openai-llm-failed' }).bad === true, 'a pipeline error IS flagged');
+    ok(callEndedBadly({ endedReason: 'silence-timed-out' }).bad === true, 'dead-air (silence timeout) IS flagged');
+    ok(callEndedBadly({ endedReason: 'exceeded-max-duration' }).bad === true, 'hitting the max-duration cap IS flagged');
+    ok(callEndedBadly({ endedReason: 'customer-did-not-give-microphone-permission' }).bad === true, 'no-microphone IS flagged');
+    ok(callEndedBadly({ endedReason: 'customer-ended-call', analysis: { successEvaluation: 'fail' } }).bad === true, 'a normal end but "fail" success-eval IS flagged');
+    ok(callEndedBadly({ endedReason: 'customer-ended-call', analysis: { successEvaluation: 'pass' } }).bad === false, 'a normal end with "pass" success-eval is NOT flagged');
+    const badAlert = buildCallReviewAlert({
+      endedReason: 'assistant-error',
+      call: { id: 'call_123' },
+      analysis: { summary: 'Caller asked for hours; assistant errored.' },
+    });
+    ok(badAlert && /review/i.test(badAlert.title), 'a bad call builds an alert titled for review');
+    ok(badAlert && badAlert.message.includes('call_123'), 'the alert body carries the call id');
+    ok(badAlert && badAlert.opts.url === 'https://dashboard.vapi.ai/calls/call_123', 'the alert deep-links to the Vapi call');
+    ok(badAlert && /assistant-error/.test(badAlert.message), 'the alert states why the call was flagged');
+  }
 }
 
 // --------------------------------------------------------------------------- live (network)

@@ -291,7 +291,24 @@ async function notifyOwner(booking) {
   const channels = await Promise.all(
     jobs.map((fn) => fn(booking).catch((e) => ({ delivered: false, channel: 'unknown', detail: e.message })))
   );
-  return { delivered: channels.some((c) => c.delivered), channel: channels.map((c) => c.channel).join('+'), channels };
+  const result = { delivered: channels.some((c) => c.delivered), channel: channels.map((c) => c.channel).join('+'), channels };
+  if (!result.delivered) {
+    // Every configured owner channel failed — the salon owner will NOT see this request. Page the
+    // operator so they can hand-deliver it before the customer is let down. Awaited (serverless can
+    // freeze post-response work), but this only runs in the rare all-channels-down path, so it never
+    // adds latency to a normal call.
+    try {
+      const { alertOps } = require('./opsAlert');
+      await alertOps(
+        '🚨 Hukilau: owner alert FAILED',
+        `A request was captured but did NOT reach the salon owner (channels tried: ${result.channel}). Re-send it by hand:\n\n${formatOwnerMessage(booking)}`,
+        { level: 'emergency' }
+      );
+    } catch (_) {
+      /* ops alerting must never break the tool path */
+    }
+  }
+  return result;
 }
 
 module.exports = {

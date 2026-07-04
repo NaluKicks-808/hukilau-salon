@@ -37,6 +37,8 @@ const {
   resolveServicePhrase,
 } = require('./hukilau-booking');
 const { getSalonData, prefetchAppointments } = require('./src/salonClient');
+const { alertOps } = require('./src/opsAlert');
+const { buildCallReviewAlert } = require('./src/callReview');
 
 const PORT = process.env.PORT || 8787;
 const VAPI_SECRET = process.env.VAPI_SECRET || '';
@@ -115,6 +117,7 @@ async function handleToolRequest(req, res, defaultTool) {
   }
 
   const results = [];
+  const errored = [];
   for (const call of calls) {
     const toolName = call.name || defaultTool;
     const fn = TOOLS[toolName];
@@ -147,10 +150,25 @@ async function handleToolRequest(req, res, defaultTool) {
           stack: (err.stack || '').split('\n').slice(0, 3),
         })
       );
+      errored.push({ tool: toolName, error: err.message });
       results.push({
         toolCallId: call.id,
         result: "Sorry, I hit a snag just now — could you try again in a moment? I can also have the salon follow up with you.",
       });
+    }
+  }
+  if (errored.length) {
+    // A tool crashed mid-call — the caller got an apology, but the operator should hear about it now.
+    // Awaited so the push actually goes out on serverless; only runs on the (rare) error path.
+    try {
+      const lines = errored.map((e) => `• ${e.tool}: ${e.error}`).join('\n');
+      await alertOps(
+        '⚠️ Hukilau tool error',
+        `${errored.length} tool call(s) errored on a live call${callId ? ` (call ${callId})` : ''}:\n${lines}`,
+        { level: 'high' }
+      );
+    } catch (_) {
+      /* ops alerting must never break the tool path */
     }
   }
   res.json({ results });
@@ -194,6 +212,15 @@ app.post('/vapi/events', async (req, res) => {
       await prefetchAppointments();
     } catch (_) {
       /* best effort */
+    }
+  } else if (msg.type === 'end-of-call-report') {
+    // Vapi posts this after every call. Page the operator ONLY if the call ended abnormally
+    // (error / dead-air / max-duration / rated unsuccessful); normal hang-ups stay silent.
+    try {
+      const alert = buildCallReviewAlert(msg);
+      if (alert) await alertOps(alert.title, alert.message, alert.opts);
+    } catch (_) {
+      /* best effort — never fail the webhook over an alert */
     }
   }
   res.json({ ok: true });
