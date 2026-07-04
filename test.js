@@ -314,6 +314,47 @@ function runUnit() {
     ok(badAlert && badAlert.opts.url === 'https://dashboard.vapi.ai/calls/call_123', 'the alert deep-links to the Vapi call');
     ok(badAlert && /assistant-error/.test(badAlert.message), 'the alert states why the call was flagged');
   }
+
+  section('ops log + status page (unit)');
+  {
+    const { computeDigest, formatDigest, hstDayOf } = require('./src/opsLog');
+    const { renderOpsPage, escapeHtml } = require('./src/opsPage');
+    const day = '2026-07-03';
+    const atNoon = Date.parse('2026-07-03T22:00:00Z'); // 12:00 HST
+    const events = [
+      { t: 'call', at: atNoon, bad: false, reason: 'customer-ended-call' },
+      { t: 'call', at: atNoon + 1000, bad: true, why: 'ended: silence-timed-out', reason: 'silence-timed-out' },
+      { t: 'capture', at: atNoon + 2000, action: 'book', delivered: true },
+      { t: 'capture', at: atNoon + 3000, action: 'reschedule', delivered: false },
+      { t: 'tool_error', at: atNoon + 4000, tool: 'book_appointment', error: 'boom' },
+      { t: 'owner_fail', at: atNoon + 5000, action: 'reschedule', channels: 'notion+pushover' },
+      { t: 'call', at: Date.parse('2026-07-04T22:00:00Z'), bad: false, reason: 'customer-ended-call' },
+    ];
+    const d = computeDigest(events, day);
+    ok(d.calls === 2 && d.badCalls === 1, 'digest counts calls + flagged for the requested day only');
+    ok(d.captures === 2 && d.byAction.book === 1 && d.byAction.reschedule === 1, 'digest counts captures by action');
+    ok(d.captureFails === 1 && d.toolErrors === 1 && d.ownerFails === 1, 'digest counts delivery fails, tool errors, owner fails');
+    // Day bucketing must be salon-local: 09:59Z on the 4th is 23:59 HST on the 3rd.
+    ok(hstDayOf(Date.parse('2026-07-04T09:59:00Z')) === '2026-07-03', 'digest day boundary uses HST, not UTC');
+    const { title, body } = formatDigest(d, day, { statusLine: 'Server ✅ · Salon site ✅ 120ms' });
+    ok(title.includes('Jul 3'), 'digest title names the day');
+    ok(body.includes('2 calls') && body.includes('1 flagged') && body.includes('Server ✅'), 'digest body carries counts + the live status line');
+    ok(body.includes('did NOT reach the owner'), 'digest surfaces captures that failed to reach the owner');
+
+    ok(escapeHtml('<script>"x"&\'</script>').indexOf('<') === -1, 'escapeHtml leaves no raw angle brackets');
+    const page = renderOpsPage({
+      sha: 'abc1234def',
+      now: atNoon,
+      health: { authEnabled: false, holdsStore: true, notifyConfigured: true, opsConfigured: true, opsLog: true },
+      probe: { ok: true, ms: 123 },
+      today: d,
+      events: [{ t: 'call', at: atNoon, bad: true, why: 'x', reason: 'silence-timed-out', summary: '<script>alert(1)</script>' }],
+      opsKeySet: false,
+    });
+    ok(page.includes('&lt;script&gt;') && !page.includes('<script>alert'), 'ops page HTML-escapes call summaries (XSS guard)');
+    ok(page.includes('123ms') && page.includes('Hukilau'), 'ops page renders the salon probe + branding');
+    ok(page.includes('OPS_KEY'), 'ops page hints at setting OPS_KEY when the page is open');
+  }
 }
 
 // --------------------------------------------------------------------------- live (network)

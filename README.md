@@ -255,3 +255,27 @@ Upstash Redis (`src/pendingHolds.js`), and `shapeStylists` subtracts holds from 
   configured it's a safe no-op. `GET /health` reports `holdsStore: true|false`.
 - Residual: a sub-second simultaneous double-book is still possible (check-then-act); the owner
   is the final dedupe. A SETNX slot reservation could close that later if ever needed.
+
+## Round 3 — live monitoring (operator alerts + ops page + daily digest)
+
+Once a paying client is on the line, "check the Vercel logs" isn't monitoring. Three layers,
+all separate from the salon owner's booking alerts (she never sees technical noise):
+
+**Instant operator alerts** (`src/opsAlert.js` → Pushover to `PUSHOVER_DEV_USER`):
+- ⚠️ **Tool error** — any tool crash mid-call (high priority).
+- 📞 **Call needs review** — Vapi's end-of-call report says the call ended abnormally
+  (`src/callReview.js`: pipeline error, silence timeout, max-duration, or a negative
+  `successEvaluation`). Normal hang-ups stay silent. Deep-links to the call in Vapi.
+- 🚨 **Owner alert FAILED** — a capture reached zero owner channels (emergency priority,
+  repeats until acknowledged; carries the full handoff so it can be re-sent by hand).
+
+**`GET /ops`** — phone-first status page: live health lights (server, salon-site probe with
+latency, holds store, owner/ops channels, event log), today's counts, and the recent event
+stream. Events live in a rolling Upstash list (`src/opsLog.js`, newest 400, 14-day TTL) — no
+customer names or phones are ever logged there. Protect it with `OPS_KEY` (then open
+`/ops?key=...`); without a key the page is open and says so.
+
+**`GET /ops/digest`** — one-line daily health push at 7:00 AM HST (vercel.json cron, 17:00
+UTC): calls / flagged, captures / delivery, tool errors, live status line. `?dry=1` previews
+without pushing, `?day=today` mid-day check. If you set `OPS_KEY`, also set `CRON_SECRET`
+(Vercel sends it as `Authorization: Bearer ...` on cron requests) or the cron will 401.

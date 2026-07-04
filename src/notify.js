@@ -292,6 +292,22 @@ async function notifyOwner(booking) {
     jobs.map((fn) => fn(booking).catch((e) => ({ delivered: false, channel: 'unknown', detail: e.message })))
   );
   const result = { delivered: channels.some((c) => c.delivered), channel: channels.map((c) => c.channel).join('+'), channels };
+  // Ops event log — shape + outcome only, never the customer's name or phone (the owner channels
+  // carry the actual handoff; /ops only needs to show that a capture happened and whether it landed).
+  try {
+    const { logEvent } = require('./opsLog');
+    logEvent('capture', {
+      action: booking.action || 'book',
+      delivered: result.delivered,
+      service: booking.service || null,
+      when: booking.when || null,
+    }).catch(() => {});
+    if (!result.delivered) {
+      logEvent('owner_fail', { action: booking.action || 'book', channels: result.channel }).catch(() => {});
+    }
+  } catch (_) {
+    /* the log must never break delivery */
+  }
   if (!result.delivered) {
     // Every configured owner channel failed — the salon owner will NOT see this request. Page the
     // operator so they can hand-deliver it before the customer is let down. Awaited (serverless can

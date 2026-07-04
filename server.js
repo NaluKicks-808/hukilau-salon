@@ -36,13 +36,16 @@ const {
   getServiceInfo,
   resolveServicePhrase,
 } = require('./hukilau-booking');
-const { getSalonData, prefetchAppointments } = require('./src/salonClient');
-const { alertOps } = require('./src/opsAlert');
-const { buildCallReviewAlert } = require('./src/callReview');
+const { getSalonData, prefetchAppointments, PAGE_URL } = require('./src/salonClient');
+const { alertOps, opsConfigured } = require('./src/opsAlert');
+const { buildCallReviewAlert, callEndedBadly, durationLabel, callIdOf } = require('./src/callReview');
+const opsLog = require('./src/opsLog');
+const { renderOpsPage } = require('./src/opsPage');
 
 const PORT = process.env.PORT || 8787;
 const VAPI_SECRET = process.env.VAPI_SECRET || '';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+const OPS_KEY = process.env.OPS_KEY || '';
 
 const TOOLS = {
   check_availability: checkAvailability,
@@ -151,6 +154,7 @@ async function handleToolRequest(req, res, defaultTool) {
         })
       );
       errored.push({ tool: toolName, error: err.message });
+      opsLog.logEvent('tool_error', { tool: toolName, error: String(err.message).slice(0, 200), callId }).catch(() => {});
       results.push({
         toolCallId: call.id,
         result: "Sorry, I hit a snag just now — could you try again in a moment? I can also have the salon follow up with you.",
@@ -214,9 +218,20 @@ app.post('/vapi/events', async (req, res) => {
       /* best effort */
     }
   } else if (msg.type === 'end-of-call-report') {
-    // Vapi posts this after every call. Page the operator ONLY if the call ended abnormally
-    // (error / dead-air / max-duration / rated unsuccessful); normal hang-ups stay silent.
+    // Vapi posts this after every call. Log EVERY call for /ops and the daily digest, then page
+    // the operator ONLY if the call ended abnormally (error / dead-air / max-duration / rated
+    // unsuccessful); normal hang-ups stay silent.
     try {
+      const verdict = callEndedBadly(msg);
+      const summary = (msg.analysis && msg.analysis.summary) || msg.summary || '';
+      await opsLog.logEvent('call', {
+        callId: callIdOf(msg),
+        reason: String(msg.endedReason || ''),
+        bad: verdict.bad,
+        why: verdict.why,
+        dur: durationLabel(msg),
+        summary: String(summary).slice(0, 240),
+      });
       const alert = buildCallReviewAlert(msg);
       if (alert) await alertOps(alert.title, alert.message, alert.opts);
     } catch (_) {
@@ -224,6 +239,78 @@ app.post('/vapi/events', async (req, res) => {
     }
   }
   res.json({ ok: true });
+});
+
+// ---------- operator status page + daily digest ----------
+
+// /ops requires OPS_KEY only when one is configured; without it the page is open (owner's
+// explicit posture — same as the webhook) and shows a hint to set one. Call summaries appear on
+// this page, so setting OPS_KEY is recommended.
+function opsKeyOk(req) {
+  if (!OPS_KEY) return true;
+  return req.query.key === OPS_KEY || req.get('x-ops-key') === OPS_KEY;
+}
+
+// Honest reachability probe: hits the salon's real booking page and times it. getSalonData()
+// can't be used here — its snapshot fallback would report "ok" while the salon site is down.
+// Bounded so a dead site can't hang the ops page.
+async function probeSalonSite() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  const started = Date.now();
+  try {
+    const res = await fetch(PAGE_URL, { signal: ctrl.signal, headers: { 'User-Agent': 'hukilau-ops-probe' } });
+    return { ok: res.ok, status: res.status, ms: Date.now() - started };
+  } catch (e) {
+    return { ok: false, error: e.name === 'AbortError' ? 'timeout (6s)' : e.message, ms: Date.now() - started };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.get('/ops', async (req, res) => {
+  if (!opsKeyOk(req)) return res.status(401).send('unauthorized — append ?key=YOUR_OPS_KEY');
+  const [probe, events] = await Promise.all([probeSalonSite(), opsLog.recentEvents(80)]);
+  const html = renderOpsPage({
+    sha: process.env.VERCEL_GIT_COMMIT_SHA || '',
+    now: Date.now(),
+    health: {
+      authEnabled: !!VAPI_SECRET,
+      holdsStore: require('./src/pendingHolds').isConfigured(),
+      notifyConfigured: require('./src/notify').MODE !== 'return',
+      opsConfigured: opsConfigured(),
+      opsLog: opsLog.isConfigured(),
+    },
+    probe,
+    today: opsLog.computeDigest(events, opsLog.todayHst()),
+    events,
+    opsKeySet: !!OPS_KEY,
+    digestHref: `/ops/digest?dry=1&day=today${OPS_KEY ? `&key=${encodeURIComponent(OPS_KEY)}` : ''}`,
+  });
+  res.type('html').send(html);
+});
+
+// Daily digest for one HST day — default yesterday (the 7 AM HST cron summarizes the prior day);
+// ?day=today for a mid-day check; ?dry=1 returns the text without pushing. Auth: OPS_KEY or
+// CRON_SECRET when configured (Vercel's cron sends `Authorization: Bearer $CRON_SECRET`
+// automatically once that env var exists); open when neither is set. NOTE: if you set OPS_KEY,
+// set CRON_SECRET too or the scheduled digest will start 401ing.
+app.get('/ops/digest', async (req, res) => {
+  const bearer = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  const cronOk = !!CRON_SECRET && (req.get('x-cron-secret') === CRON_SECRET || bearer === CRON_SECRET);
+  const open = !OPS_KEY && !CRON_SECRET;
+  if (!open && !cronOk && !opsKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
+
+  const dayIso = req.query.day === 'today' ? opsLog.todayHst() : opsLog.yesterdayHst();
+  const [events, probe] = await Promise.all([opsLog.recentEvents(opsLog.OPS_MAX), probeSalonSite()]);
+  const digest = opsLog.computeDigest(events, dayIso);
+  const holdsOk = require('./src/pendingHolds').isConfigured();
+  const ownerOk = require('./src/notify').MODE !== 'return';
+  const statusLine = `Server ✅ · Salon site ${probe.ok ? `✅ ${probe.ms}ms` : '❌ DOWN'} · Holds ${holdsOk ? '✅' : '—'} · Owner alerts ${ownerOk ? '✅' : '❌'}`;
+  const { title, body } = opsLog.formatDigest(digest, dayIso, { statusLine });
+  if (req.query.dry) return res.type('text/plain').send(`${title}\n${body}`);
+  const sent = await alertOps(title, body, { level: 'normal', url: 'https://hukilau-salon.vercel.app/ops', urlTitle: 'Open ops page' });
+  res.json({ ok: true, delivered: sent.delivered, day: dayIso });
 });
 
 app.get('/', (req, res) => res.json({ ok: true, service: 'hukilau-receptionist' }));
