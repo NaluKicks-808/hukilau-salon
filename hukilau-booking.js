@@ -263,7 +263,7 @@ async function checkAvailability(args = {}) {
       // input ("manicure") there's no real overlap — say it isn't listed and can be a special
       // request, matching bookAppointment's off-menu tone (no capture happens here).
       if (r.ambiguous && r.candidates && r.candidates.length) {
-        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+        message += ` Did you mean ${speakOr(r.candidates.map((c) => c.name))}?`;
       } else {
         message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
       }
@@ -665,7 +665,7 @@ async function rescheduleAppointment(args = {}) {
       let message = r.message;
       if (r.error === 'unknown_service') {
         if (r.ambiguous && r.candidates && r.candidates.length) {
-          message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+          message += ` Did you mean ${speakOr(r.candidates.map((c) => c.name))}?`;
         } else {
           message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
         }
@@ -796,7 +796,7 @@ async function findEarliestAvailability(args = {}) {
     let message = r.message;
     if (r.error === 'unknown_service') {
       if (r.ambiguous && r.candidates && r.candidates.length) {
-        message += ` Did you mean ${speakList(r.candidates.map((c) => c.name))}?`;
+        message += ` Did you mean ${speakOr(r.candidates.map((c) => c.name))}?`;
       } else {
         message = `${String(args.service).trim()} isn't one of our listed services, but I can take it as a special request for the salon to confirm.`;
       }
