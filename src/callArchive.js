@@ -25,7 +25,9 @@ const { onceOnly } = require('./opsLog');
 
 const SALON_TZ = () => process.env.SALON_TZ || 'Pacific/Honolulu';
 const CHUNK = 1900; // margin under Notion's 2000-char rich-text limit
-const MAX_CHUNKS = 45; // ~85KB of transcript per page; beyond that we truncate with a note
+const MAX_CHUNKS = 25; // ~47KB of transcript per page; beyond that we truncate with a note
+const ARCHIVE_TIMEOUT_MS = 20000; // Notion page-create with many blocks can exceed 8s (a live call's
+// report aborted at 8s and its transcript was lost); the /vapi/events function budget is 30s.
 
 function isConfigured() {
   return !!(process.env.NOTION_API_KEY && process.env.NOTION_CALLS_DB_ID);
@@ -113,7 +115,7 @@ async function archiveCall(msg) {
     }
     const { properties, children } = buildCallMeta(msg);
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000); // never hang the webhook on the archive
+    const timer = setTimeout(() => ctrl.abort(), ARCHIVE_TIMEOUT_MS); // never hang the webhook on the archive
     try {
       const res = await fetch('https://api.notion.com/v1/pages', {
         method: 'POST',

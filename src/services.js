@@ -109,6 +109,49 @@ function score(queryTokens, nameTokens) {
   return shared * 2 + qProp + nProp;
 }
 
+// True when a and b differ by at most one edit (substitution/insertion/deletion). Length-guarded
+// so it's O(n) and never allocates a matrix.
+function within1(a, b) {
+  if (a === b) return true;
+  const la = a.length;
+  const lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (la > lb) i += 1;
+    else if (lb > la) j += 1;
+    else {
+      i += 1;
+      j += 1;
+    }
+  }
+  if (i < la || j < lb) edits += 1;
+  return edits <= 1;
+}
+
+// Core, high-volume service words a voice model commonly mishears ("cut" -> "cup"/"cuff"/"cot").
+// A 1-edit near-miss of one of these — when nothing on the menu really matched — should prompt a
+// did-you-mean over that family, NOT fall through to off-menu capture. (Live incident 2026-07-06:
+// caller wanted a "cut", STT heard "cup", and it was taken as a special request; the call derailed.)
+// Kept tight and 4+ chars to avoid false hits on short common words.
+const CORE_SERVICE_WORDS = ['cut', 'haircut', 'color', 'colour', 'perm', 'balayage', 'blowout', 'highlights', 'updo'];
+function nearMissWord(token) {
+  if (!token || token.length < 3) return null;
+  for (const w of CORE_SERVICE_WORDS) {
+    if (token !== w && within1(token, w)) return w;
+  }
+  return null;
+}
+
 /**
  * @returns {{
  *   match: {index:number,name:string,posID:string,durationMinutes:number,priceCents:number,varies:boolean}|null,
@@ -167,6 +210,36 @@ function resolveService(input, serviceJSON) {
   if (best && best.sc >= 2 && (!second || best.sc - second.sc >= 1)) {
     return { match: toResult(best.s), candidates, ambiguous: false };
   }
+
+  // STT near-miss recovery: nothing matched, but a query token is one edit from a core service
+  // word (e.g. "cup" -> "cut"). Offer that service family as a did-you-mean instead of dropping to
+  // off-menu capture. Prefer base services (deprioritize "& Style" and the niche "Missionary Cut")
+  // and cap at 3 so the assistant asks a clean "did you mean A, B, or C?".
+  if (!best || best.sc < 2) {
+    let corrected = null;
+    for (const t of qTokens) {
+      const w = nearMissWord(t);
+      if (w) {
+        corrected = w;
+        break;
+      }
+    }
+    if (corrected) {
+      const family = services
+        .filter((s) => s.norm.includes(corrected))
+        .map((s) => {
+          let penalty = tokenize(s.norm).length;
+          if (/\bstyle\b/.test(s.norm)) penalty += 10;
+          if (/missionary/.test(s.norm)) penalty += 5;
+          return { s, penalty };
+        })
+        .sort((a, b) => a.penalty - b.penalty)
+        .slice(0, 3)
+        .map((r) => ({ index: r.s.index, name: r.s.name }));
+      if (family.length) return { match: null, candidates: family, ambiguous: true, didYouMean: true };
+    }
+  }
+
   // Ambiguous = two or more PLAUSIBLE menu services with comparable scores (e.g. "haircut",
   // "gray retouch", "highlights"). The caller named a real service imprecisely and should be
   // asked which one. A lone weak partial (e.g. "lash lift" grazing "Lash Tinting") is NOT

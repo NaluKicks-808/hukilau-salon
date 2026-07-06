@@ -315,6 +315,32 @@ function runUnit() {
     ok(badAlert && /assistant-error/.test(badAlert.message), 'the alert states why the call was flagged');
   }
 
+  section('STT near-miss recovery — "cup" -> did you mean a cut? (live-incident fix)');
+  {
+    // Minimal menu mirroring the real serviceJSON shape (name/duration/price/posID).
+    const menu = [
+      { name: "Women's Cut", duration: '01:00:00', price: 4500, posID: 'p1' },
+      { name: "Women's Cut & Style", duration: '01:30:00', price: 6000, posID: 'p2' },
+      { name: "Men's Haircut", duration: '00:45:00', price: 3500, posID: 'p3' },
+      { name: "Kid's Haircut", duration: '00:30:00', price: 2500, posID: 'p4' },
+      { name: 'Missionary Cut', duration: '00:30:00', price: 2000, posID: 'p5' },
+      { name: 'Regular Blowout', duration: '00:45:00', price: 4000, posID: 'p6' },
+      { name: 'Whole Head Color', duration: '02:00:00', price: 12000, posID: 'p7' },
+    ];
+    const r = resolveService('cup', menu);
+    ok(r.match === null && r.ambiguous === true, '"cup" no longer resolves to a match — it asks to clarify');
+    const names = (r.candidates || []).map((c) => c.name);
+    ok(names.includes("Women's Cut") && names.includes("Men's Haircut") && names.includes("Kid's Haircut"), '"cup" offers the three primary cuts as did-you-mean');
+    ok(!names.includes("Women's Cut & Style") && !names.includes('Missionary Cut'), 'the did-you-mean prefers base cuts (no "& Style" / Missionary noise)');
+    ok(names.length <= 3, 'never offers more than 3 options to choose among');
+    // Must NOT hijack real inputs or unrelated words.
+    ok(resolveService("women's cut", menu).match && resolveService("women's cut", menu).match.name === "Women's Cut", 'an exact service still resolves confidently (no false near-miss)');
+    ok(resolveService('blowout', menu).match && resolveService('blowout', menu).match.name === 'Regular Blowout', 'a real alias still resolves (near-miss never overrides a real match)');
+    const mani = resolveService('manicure', menu);
+    ok(!(mani.ambiguous && mani.didYouMean), 'an unrelated service ("manicure") does NOT trigger a cut did-you-mean — stays off-menu');
+    ok(resolveService('color', menu).match || resolveService('colour', menu).ambiguous, '"colour" (Brit spelling / mishear) routes toward Whole Head Color');
+  }
+
   section('ops log + status page (unit)');
   {
     const { computeDigest, formatDigest, hstDayOf } = require('./src/opsLog');
