@@ -152,6 +152,23 @@ function nearMissWord(token) {
   return null;
 }
 
+// Gather the "family" of services whose normalized name contains `keyword` (substring — so "cut"
+// also catches "haircut"), preferring base services: deprioritize "& Style" variants and the niche
+// "Missionary Cut", cap at 3 for a clean "did you mean A, B, or C?". `services` items carry `.norm`.
+function serviceFamily(services, keyword) {
+  return services
+    .filter((s) => s.norm.includes(keyword))
+    .map((s) => {
+      let penalty = tokenize(s.norm).length;
+      if (/\bstyle\b/.test(s.norm)) penalty += 10;
+      if (/missionary/.test(s.norm)) penalty += 5;
+      return { s, penalty };
+    })
+    .sort((a, b) => a.penalty - b.penalty)
+    .slice(0, 3)
+    .map((r) => ({ index: r.s.index, name: r.s.name }));
+}
+
 /**
  * @returns {{
  *   match: {index:number,name:string,posID:string,durationMinutes:number,priceCents:number,varies:boolean}|null,
@@ -193,6 +210,19 @@ function resolveService(input, serviceJSON) {
     if (hit) return { match: toResult(hit), candidates: [] };
   }
 
+  // 2.5) A bare category word ("cut", "haircut", "a cut") is inherently ambiguous — the caller must
+  // still choose men's/women's/kids. Offer the clean haircut family instead of the raw token-scored
+  // list (which led with the niche "Missionary Cut" and dropped Men's/Kid's, since those tokenize to
+  // "haircut" not "cut"). Only the bare word triggers this, so "women's cut" still resolves via alias.
+  const bareTokens = tokenize(q);
+  const isBareHaircut =
+    (bareTokens.length === 1 && (bareTokens[0] === 'cut' || bareTokens[0] === 'haircut')) ||
+    (bareTokens.length === 2 && bareTokens[0] === 'hair' && bareTokens[1] === 'cut');
+  if (isBareHaircut) {
+    const fam = serviceFamily(services, 'cut');
+    if (fam.length > 1) return { match: null, candidates: fam, ambiguous: true, didYouMean: true };
+  }
+
   // 3) token-overlap scoring
   const qTokens = tokenize(q);
   const ranked = services
@@ -225,17 +255,7 @@ function resolveService(input, serviceJSON) {
       }
     }
     if (corrected) {
-      const family = services
-        .filter((s) => s.norm.includes(corrected))
-        .map((s) => {
-          let penalty = tokenize(s.norm).length;
-          if (/\bstyle\b/.test(s.norm)) penalty += 10;
-          if (/missionary/.test(s.norm)) penalty += 5;
-          return { s, penalty };
-        })
-        .sort((a, b) => a.penalty - b.penalty)
-        .slice(0, 3)
-        .map((r) => ({ index: r.s.index, name: r.s.name }));
+      const family = serviceFamily(services, corrected);
       if (family.length) return { match: null, candidates: family, ambiguous: true, didYouMean: true };
     }
   }

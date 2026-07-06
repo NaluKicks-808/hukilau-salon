@@ -339,6 +339,16 @@ function runUnit() {
     const mani = resolveService('manicure', menu);
     ok(!(mani.ambiguous && mani.didYouMean), 'an unrelated service ("manicure") does NOT trigger a cut did-you-mean — stays off-menu');
     ok(resolveService('color', menu).match || resolveService('colour', menu).ambiguous, '"colour" (Brit spelling / mishear) routes toward Whole Head Color');
+
+    // Bare category word "cut"/"haircut" is inherently ambiguous — must offer the clean haircut
+    // family (Men's/Women's/Kid's), NOT lead with Missionary Cut or drop Men's/Kid's.
+    for (const word of ['cut', 'haircut', 'a cut', 'just a haircut']) {
+      const rc = resolveService(word, menu);
+      const cn = (rc.candidates || []).map((c) => c.name);
+      ok(rc.match === null && rc.ambiguous === true, `"${word}" asks the caller to choose (ambiguous)`);
+      ok(cn.includes("Women's Cut") && cn.includes("Men's Haircut") && cn.includes("Kid's Haircut"), `"${word}" offers all three primary cuts (incl. Men's + Kid's)`);
+      ok(!cn.includes('Missionary Cut') && !cn.includes("Women's Cut & Style"), `"${word}" does not lead with Missionary Cut / "& Style" noise`);
+    }
   }
 
   section('ops log + status page (unit)');
