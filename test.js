@@ -351,6 +351,39 @@ function runUnit() {
     }
   }
 
+  section('lookup_appointment — find caller\'s appointment by phone (privacy-guarded)');
+  {
+    const { summarizeAppointment, buildLookupResult } = require('./hukilau-booking');
+    const svcByPos = new Map([['SVC1', "Women's Cut"], ['SVC2', "Men's Haircut"]]);
+    const empByPos = new Map([['EMP_A', 'Amanda'], ['EMP_P', 'Patricia']]);
+    const mk = (phone, start, svc, emp) => ({
+      customerPhone: phone,
+      customerName: 'Someone Private',
+      start,
+      serviceBindings: [{ servicePOSID: svc, svcEmployeePOSID: emp }],
+    });
+    const appts = [
+      mk('8085550001', '2026-07-10T19:00:00Z', 'SVC1', 'EMP_A'), // caller #1 — Women's Cut, Amanda
+      mk('(808) 555-0002', '2026-07-08T18:30:00Z', 'SVC2', 'EMP_P'), // a different caller
+      mk('1-808-555-0001', '2026-07-12T20:00:00Z', 'SVC2', 'EMP_P'), // caller #1's 2nd appt (formatted differently)
+    ];
+    const s = summarizeAppointment(appts[0], svcByPos, empByPos, 'Pacific/Honolulu');
+    ok(s.service === "Women's Cut" && s.stylist === 'Amanda', 'summarize maps service + stylist from the POSIDs');
+    ok(s.dateIso === '2026-07-10' && /at \d/.test(s.whenSpoken), 'summarize renders salon-local date + spoken time');
+
+    const one = buildLookupResult('8085550002', appts, svcByPos, empByPos, 'Pacific/Honolulu');
+    ok(one.data.count === 1 && /Men's Haircut with Patricia/.test(one.message), 'exact phone match returns that caller\'s single appointment');
+    ok(!/Someone Private/i.test(one.message), 'read-back NEVER speaks the customer name (privacy)');
+
+    const two = buildLookupResult('8085550001', appts, svcByPos, empByPos, 'Pacific/Honolulu');
+    ok(two.data.count === 2 && /which one/i.test(two.message), 'two appointments under one number -> asks which');
+    ok(two.data.appointments[0].dateIso === '2026-07-10', 'multiple matches are sorted earliest-first');
+    ok(buildLookupResult('8085550001', [appts[2]], svcByPos, empByPos, 'Pacific/Honolulu').data.count === 1, 'stored number with +1 / dashes still matches (last-10 normalization)');
+
+    const none = buildLookupResult('8085559999', appts, svcByPos, empByPos, 'Pacific/Honolulu');
+    ok(none.error === 'not_found' && /first name/i.test(none.message), 'no match -> graceful fallback asking name + day (never a wrong appt)');
+  }
+
   section('ops log + status page (unit)');
   {
     const { computeDigest, formatDigest, hstDayOf } = require('./src/opsLog');
@@ -430,6 +463,15 @@ function runUnit() {
 }
 
 // --------------------------------------------------------------------------- live (network)
+async function runLiveLookup() {
+  section('LIVE: lookup_appointment against the real calendar (bogus number -> not_found, no PII)');
+  // 808-000-0000 won't match a real customer, so this exercises the fetch + parse without touching PII.
+  const r = await tools.lookupAppointment({ phone: '8080000000' });
+  ok(r.ok && r.data && r.data.found === false, 'live lookup with an unknown number returns a clean not_found');
+  ok(!/\d{3}[-.\s]?\d{4}/.test(r.message), 'live not_found message contains no phone digits');
+  console.log('   ', r.message);
+}
+
 async function findAvailableDate(service) {
   // Walk forward from 3 days out until we find a day with availability (max ~21 days).
   const today = todayParts();
@@ -443,6 +485,8 @@ async function findAvailableDate(service) {
 
 async function runLive() {
   const service = "women's cut & style";
+
+  await runLiveLookup();
 
   section('LIVE: availability across stylists');
   const found = await findAvailableDate(service);

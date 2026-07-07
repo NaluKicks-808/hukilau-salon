@@ -35,6 +35,7 @@ const {
   findEarliestAvailability,
   getServiceInfo,
   resolveServicePhrase,
+  lookupAppointment,
 } = require('./hukilau-booking');
 const { getSalonData, prefetchAppointments, PAGE_URL } = require('./src/salonClient');
 const { alertOps, opsConfigured } = require('./src/opsAlert');
@@ -58,6 +59,9 @@ const TOOLS = {
   add_appointment_note: addAppointmentNote,
   find_earliest_availability: findEarliestAvailability,
   get_service_info: getServiceInfo,
+  // Read-only: find the caller's own upcoming appointment by phone, so reschedule/cancel don't make
+  // them recite details. Privacy-guarded (matches only the caller's number; never speaks a name).
+  lookup_appointment: lookupAppointment,
   resolve_service: resolveServicePhrase,
   // Same handler — a dedicated tool whose schema makes `among` REQUIRED, so the model can't drop it
   // when answering a "did you mean …?" question (an optional param it kept omitting on fragments).
@@ -193,6 +197,7 @@ app.post('/vapi/add-note', (req, res) => handleToolRequest(req, res, 'add_appoin
 app.post('/vapi/find-earliest', (req, res) => handleToolRequest(req, res, 'find_earliest_availability'));
 app.post('/vapi/service-info', (req, res) => handleToolRequest(req, res, 'get_service_info'));
 app.post('/vapi/resolve-service', (req, res) => handleToolRequest(req, res, 'resolve_service'));
+app.post('/vapi/lookup-appointment', (req, res) => handleToolRequest(req, res, 'lookup_appointment'));
 
 // Warm the caches (salon config + today..+2 days of appointments) to avoid cold-start lag.
 // Hit by the Vercel keep-warm cron; also usable as a manual ping. Authenticated: it force-pulls the

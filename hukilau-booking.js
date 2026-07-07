@@ -20,9 +20,9 @@ process.env.TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 
 const moment = require('moment-timezone');
 const { getAvailability, findEarliest, findNextDays } = require('./src/availabilityEngine');
-const { getSalonData } = require('./src/salonClient');
+const { getSalonData, getBookedAppointments } = require('./src/salonClient');
 const { notifyOwner, formatOwnerMessage } = require('./src/notify');
-const { resolveStylist, isUnknownStylist, stylistNames } = require('./src/stylists');
+const { resolveStylist, isUnknownStylist, stylistNames, shortName } = require('./src/stylists');
 const { resolveServices, resolveAmong, formatPrice } = require('./src/services');
 const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
@@ -956,6 +956,107 @@ async function resolveServicePhrase(args = {}) {
   };
 }
 
+// ---------- Tool: lookup_appointment (read-only — find the caller's appointment by phone) ----------
+
+const LOOKUP_TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
+const LOOKUP_WINDOW_DAYS = 90; // forward window — reschedule/cancel always target a FUTURE appointment
+
+const last10 = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(-10);
+
+// Turn a raw getappt.php record into a caller-facing summary. Deliberately carries NO customer name
+// or phone (privacy) — only service, stylist, and time, which is all the caller needs to recognize
+// their own appointment. Returns null if the record can't be read. svcByPos: servicePOSID -> name;
+// empByPos: employee posID -> stylist short name.
+function summarizeAppointment(appt, svcByPos, empByPos, tz = LOOKUP_TZ) {
+  if (!appt || !appt.start) return null;
+  const m = moment.tz(appt.start, tz);
+  if (!m.isValid()) return null;
+  const b = (Array.isArray(appt.serviceBindings) && appt.serviceBindings[0]) || {};
+  return {
+    startMs: m.valueOf(),
+    dateIso: m.format('YYYY-MM-DD'),
+    weekday: m.format('dddd'),
+    time: m.format('h:mm A'),
+    whenSpoken: m.format('dddd, MMMM D [at] h:mm A'),
+    service: svcByPos.get(b.servicePOSID) || null,
+    stylist: empByPos.get(b.svcEmployeePOSID) || null,
+  };
+}
+
+// Pure: given the caller's 10-digit phone and the window's appointments, build the spoken read-back.
+// PRIVACY: returns ONLY appointments whose customerPhone matches the caller's number — never anyone
+// else's, and never speaks the customer's name. Exported for tests.
+function buildLookupResult(phone10, appts, svcByPos, empByPos, tz = LOOKUP_TZ) {
+  const mine = [];
+  for (const a of appts || []) {
+    if (last10(a.customerPhone) !== phone10) continue;
+    const s = summarizeAppointment(a, svcByPos, empByPos, tz);
+    if (s) mine.push(s);
+  }
+  mine.sort((a, b) => a.startMs - b.startMs);
+
+  if (!mine.length) {
+    return {
+      ok: true,
+      error: 'not_found',
+      message: "I don't see an upcoming appointment under that number. Can you tell me the first name it's under and the day it's for?",
+      data: { found: false, count: 0, appointments: [] },
+    };
+  }
+  const say = (a) => `a ${a.service || 'appointment'}${a.stylist ? ` with ${a.stylist}` : ''} on ${a.whenSpoken}`;
+  if (mine.length === 1) {
+    return {
+      ok: true,
+      message: `I found ${say(mine[0])}. Is that the one you want to change?`,
+      data: { found: true, count: 1, appointments: mine },
+    };
+  }
+  const list = mine.slice(0, 4).map((a, i) => `${i + 1}) ${say(a)}`).join('; ');
+  return {
+    ok: true,
+    message: `I see a few under that number: ${list}. Which one?`,
+    data: { found: true, count: mine.length, appointments: mine },
+  };
+}
+
+/**
+ * lookup_appointment — find the CALLER'S upcoming appointment(s) by phone so the assistant can read
+ * one back ("I found a Women's Cut with Amanda on Monday at 10 — is that the one?") instead of making
+ * the caller recite the details. Read-only; never writes. Privacy: matches only the given number and
+ * never speaks the customer's name. Feed it the caller's own caller-ID number.
+ */
+async function lookupAppointment(args = {}) {
+  const phone10 = last10(args.phone || args.customerPhone || args.number);
+  if (phone10.length < 10) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: "I can look that up — what's the phone number the appointment is under?",
+      data: { missing: ['phone'] },
+    };
+  }
+  let data;
+  let appts;
+  try {
+    data = await getSalonData();
+    const startMs = moment.tz(LOOKUP_TZ).startOf('day').valueOf();
+    appts = await getBookedAppointments(startMs, LOOKUP_WINDOW_DAYS);
+  } catch (_) {
+    return {
+      ok: false,
+      error: 'unavailable',
+      message: "I can't pull up the schedule this second — the salon can confirm your appointment directly, or I can take a message.",
+      data: {},
+    };
+  }
+  const svcByPos = new Map((data.serviceJSON || []).map((s) => [s.posID, s.name]));
+  const empByPos = new Map();
+  (data.employeeJSON || []).forEach((e, i) => {
+    if (e.posID) empByPos.set(e.posID, shortName(i));
+  });
+  return buildLookupResult(phone10, appts, svcByPos, empByPos, LOOKUP_TZ);
+}
+
 // parseClock and deliveryReachedOwner are exported for unit tests.
 module.exports = {
   checkAvailability,
@@ -966,6 +1067,9 @@ module.exports = {
   findEarliestAvailability,
   getServiceInfo,
   resolveServicePhrase,
+  lookupAppointment,
+  summarizeAppointment,
+  buildLookupResult,
   parseClock,
   parseWeekdays,
   deliveryReachedOwner,
