@@ -152,6 +152,16 @@ function runUnit() {
   ok(nww && nww.startMs > tp().startMs, '"next week Wednesday" is in the future');
   ok(resolveDate('Monday next week').weekday === 'Monday', '"Monday next week" resolves to a Monday');
 
+  // REGRESSION (live cancel 019f3ed5, 2026-07-07): caller said "Tuesday, July 7th" (today) and the
+  // resolver rolled it to "Wednesday, July 7, 2027" — chrono's forwardDate over-rolls an exact date
+  // equal to today. Today's own month/day must resolve to TODAY, not next year.
+  const today = todayParts();
+  const todaySpoken = `${moment(today.startMs).format('MMMM')} ${today.day}`;
+  const rToday = resolveDate(todaySpoken);
+  ok(rToday && rToday.iso === today.iso, `"${todaySpoken}" (today's date) resolves to today (${today.iso}), not next year (got ${rToday && rToday.iso})`);
+  const rTodayDow = resolveDate(`${today.weekday}, ${todaySpoken}`);
+  ok(rTodayDow && rTodayDow.iso === today.iso && rTodayDow.weekday === today.weekday, "today's date with its weekday prefix stays today, weekday consistent");
+
   section('parseClock');
   ok(tools.parseClock('9:15 AM') === 555, '9:15 AM -> 555');
   ok(tools.parseClock('2:30 pm') === 870, '2:30 pm -> 870');

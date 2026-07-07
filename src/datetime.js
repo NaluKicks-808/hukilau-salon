@@ -66,8 +66,18 @@ function resolveDate(input, tz = DEFAULT_TZ) {
   const refNow = moment.tz(tz).toDate();
   const parsed = chrono.parseDate(normalizeRelative(s), refNow, { forwardDate: true });
   if (!parsed) return null;
-  const m = moment.tz(parsed, tz);
+  let m = moment.tz(parsed, tz);
   if (!m.isValid()) return null;
+  // chrono's forwardDate OVER-rolls an exact date that equals today: a bare "July 7th" spoken on
+  // July 7 (today at 00:00 is technically "past" now) becomes NEXT YEAR — which also flips the
+  // weekday (2027-07-07 is a Wednesday). Correction: if chrono landed on a future YEAR but the same
+  // month/day in the CURRENT year is today-or-later, use this year, so today's own date stays today
+  // (live cancel bug 2026-07-07: "Tuesday, July 7th" was resolving to "Wednesday, July 7, 2027").
+  const todayStart = moment.tz(tz).startOf('day');
+  if (m.year() > todayStart.year()) {
+    const sameThisYear = moment.tz(`${todayStart.year()}-${pad(m.month() + 1)}-${pad(m.date())} 00:00`, 'YYYY-MM-DD HH:mm', tz);
+    if (sameThisYear.isValid() && !sameThisYear.isBefore(todayStart)) m = sameThisYear;
+  }
   // Use the salon-local calendar date of the parsed instant, at start of day.
   const dayStart = moment.tz(`${m.year()}-${pad(m.month() + 1)}-${pad(m.date())} 00:00`, 'YYYY-MM-DD HH:mm', tz);
   return partsFromMoment(dayStart, tz);
