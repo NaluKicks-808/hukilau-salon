@@ -28,18 +28,18 @@ const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
 
 // ---------- confirmation gate ----------
-// When REQUIRE_CONFIRMATION=true, the capture tools (book/reschedule/cancel) do NOT notify the salon
-// or hold a slot until the caller has confirmed every detail. The tool first VALIDATES and returns a
-// read-back summary (including the callback number); it only commits when called again with
-// confirmed:true. This prevents premature/duplicate owner alerts and a premature hold that would
-// block the caller's own re-book (the live incident). Read dynamically (not a load-time const) so it
-// can be toggled without a code change — flip REQUIRE_CONFIRMATION on once the prompt + tool schemas
-// pass `confirmed`. Default OFF = today's behavior, so shipping this code changes nothing until then.
+// The capture tools (book/reschedule/cancel) do NOT notify the salon or hold a slot until the caller
+// has confirmed every detail. The tool first VALIDATES and returns a read-back summary (including the
+// callback number); it only commits when called again with confirmed:true. This prevents
+// premature/duplicate owner alerts and a premature hold that would block the caller's own re-book
+// (the live incident, 2026-07-07). Read dynamically so it can be toggled without a code change.
+// ACTIVE by default (prompt + tool schemas support the two-step); set REQUIRE_CONFIRMATION=false in
+// the env as an emergency off-switch to fall back to immediate commit.
 function isConfirmed(args) {
   return args.confirmed === true || args.confirmed === 'true';
 }
 function awaitingConfirmation(args) {
-  return process.env.REQUIRE_CONFIRMATION === 'true' && !isConfirmed(args);
+  return process.env.REQUIRE_CONFIRMATION !== 'false' && !isConfirmed(args);
 }
 // Format a phone's last 10 digits for a spoken read-back ("808-555-1234").
 function speakPhone(p) {
