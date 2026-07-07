@@ -351,6 +351,14 @@ function runUnit() {
     }
   }
 
+  section('caller-ID auto-fill (server defaults phone from Vapi call metadata)');
+  {
+    const { extractCallerNumber } = require('./server');
+    ok(extractCallerNumber({ message: { call: { customer: { number: '+18085551234' } } } }) === '+18085551234', 'pulls the caller number from message.call.customer.number');
+    ok(extractCallerNumber({ message: { customer: { number: '+18085550000' } } }) === '+18085550000', 'falls back to message.customer.number');
+    ok(extractCallerNumber({ message: { call: { id: 'abc' } } }) === null, 'returns null when the payload carries no caller number');
+  }
+
   section('take_message — real message relay (fixes the hallucinated "I\'ll pass it along")');
   {
     const { formatOwnerMessage } = require('./src/notify');

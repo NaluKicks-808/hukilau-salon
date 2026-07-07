@@ -105,6 +105,22 @@ function extractToolCalls(body) {
   });
 }
 
+// Vapi includes the inbound caller's number in the call metadata. Pull it so capture/lookup tools
+// can DEFAULT `phone` to the caller's own number when the model doesn't pass one. A caller booking
+// for someone else still overrides it by stating a different number (we only fill when it's missing).
+// Checks the known Vapi payload shapes; returns null if none carry a number.
+function extractCallerNumber(body) {
+  const msg = (body && body.message) || {};
+  const candidates = [
+    msg.call && msg.call.customer && msg.call.customer.number,
+    msg.customer && msg.customer.number,
+    body && body.call && body.call.customer && body.call.customer.number,
+    msg.call && msg.call.customerNumber,
+  ];
+  const n = candidates.find((x) => x && /\d{7,}/.test(String(x)));
+  return n ? String(n) : null;
+}
+
 // Always return a plain SPEAKABLE STRING to Vapi. Some Vapi versions reject object results with
 // "No result returned", and owner delivery now happens out-of-band via SMS (Telnyx) — so Vapi
 // only needs the line for the assistant to say.
@@ -121,6 +137,7 @@ function maskPhone(args) {
 async function handleToolRequest(req, res, defaultTool) {
   if (!checkSecret(req, res)) return;
   const callId = req.body && req.body.message && req.body.message.call && req.body.message.call.id;
+  const callerNumber = extractCallerNumber(req.body);
   // Cap fan-out: one request can carry many tool calls, each of which may fire Pushover/Telnyx/
   // Notion. Process at most the first 10 so a crafted request can't amplify into thousands of sends.
   const calls = extractToolCalls(req.body).slice(0, 10);
@@ -138,6 +155,11 @@ async function handleToolRequest(req, res, defaultTool) {
   for (const call of calls) {
     const toolName = call.name || defaultTool;
     const fn = TOOLS[toolName];
+    // Default the phone to the caller's own number when the model didn't supply one, so callbacks,
+    // messages, and appointment lookups always have a number even if the assistant forgets to pass it.
+    if (callerNumber && call.args && !(call.args.phone || call.args.customerPhone || call.args.number)) {
+      call.args.phone = callerNumber;
+    }
     try {
       if (!fn) throw new Error(`unknown tool: ${toolName}`);
       const out = await fn(call.args);
@@ -151,6 +173,7 @@ async function handleToolRequest(req, res, defaultTool) {
           tool: toolName,
           ok: out.ok,
           error: out.error || null,
+          callerId: callerNumber ? 'present' : 'absent',
           delivery: out.data && out.data.delivery ? out.data.delivery : undefined,
           args: maskPhone(call.args),
           resultPreview: String(result).slice(0, 180),
@@ -387,4 +410,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, extractToolCalls, toResult };
+module.exports = { app, extractToolCalls, toResult, extractCallerNumber };
