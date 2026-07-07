@@ -27,6 +27,26 @@ const { resolveServices, resolveAmong, formatPrice } = require('./src/services')
 const { resolveDate } = require('./src/datetime');
 const { addHold } = require('./src/pendingHolds');
 
+// ---------- confirmation gate ----------
+// When REQUIRE_CONFIRMATION=true, the capture tools (book/reschedule/cancel) do NOT notify the salon
+// or hold a slot until the caller has confirmed every detail. The tool first VALIDATES and returns a
+// read-back summary (including the callback number); it only commits when called again with
+// confirmed:true. This prevents premature/duplicate owner alerts and a premature hold that would
+// block the caller's own re-book (the live incident). Read dynamically (not a load-time const) so it
+// can be toggled without a code change — flip REQUIRE_CONFIRMATION on once the prompt + tool schemas
+// pass `confirmed`. Default OFF = today's behavior, so shipping this code changes nothing until then.
+function isConfirmed(args) {
+  return args.confirmed === true || args.confirmed === 'true';
+}
+function awaitingConfirmation(args) {
+  return process.env.REQUIRE_CONFIRMATION === 'true' && !isConfirmed(args);
+}
+// Format a phone's last 10 digits for a spoken read-back ("808-555-1234").
+function speakPhone(p) {
+  const d = String(p == null ? '' : p).replace(/\D/g, '').slice(-10);
+  return d.length === 10 ? `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}` : String(p || '');
+}
+
 // ---------- owner-delivery guard ----------
 
 // Did the captured request actually reach an owner channel? notifyOwner returns channel
@@ -412,6 +432,14 @@ async function bookAppointment(args = {}) {
         source: 'vapi-ai-receptionist',
         capturedAt: new Date().toISOString(),
       };
+      if (awaitingConfirmation(args)) {
+        return {
+          ok: true,
+          needsConfirmation: true,
+          message: `Just to confirm as a special request: ${booking.service}${when.text ? ' on ' + when.text : ''}, callback ${speakPhone(booking.customer.phone)}. Should I send that to the salon?`,
+          data: { booking, pendingConfirmation: true },
+        };
+      }
       const delivery = await notifyOwner(booking);
       // Block the slot for the next caller too (best-effort). Off-menu has no known duration, so
       // assume 60 min; holds only ever ADD a block, so over-blocking is safe.
@@ -493,6 +521,16 @@ async function bookAppointment(args = {}) {
     capturedAt: new Date().toISOString(),
   };
 
+  if (awaitingConfirmation(args)) {
+    // Read-back gate: validated the slot, but don't notify the salon or hold it until the caller says yes.
+    return {
+      ok: true,
+      needsConfirmation: true,
+      message: `Just to confirm: a ${booking.service} with ${booking.stylist} on ${booking.when}, callback ${speakPhone(booking.customer.phone)}. Should I send that request to the salon?`,
+      data: { booking, pendingConfirmation: true },
+    };
+  }
+
   const delivery = await notifyOwner(booking);
   // Hold this slot so the next caller can't be offered it before the owner enters it.
   await addHold({
@@ -561,6 +599,15 @@ async function cancelAppointment(args = {}) {
     source: 'vapi-ai-receptionist',
     capturedAt: new Date().toISOString(),
   };
+
+  if (awaitingConfirmation(args)) {
+    return {
+      ok: true,
+      needsConfirmation: true,
+      message: `Just to confirm: cancel your ${cancellation.service || 'appointment'}${cancellation.when ? ' on ' + cancellation.when : ''}, callback ${speakPhone(cancellation.customer.phone)}. Should I send that cancellation to the salon?`,
+      data: { cancellation, pendingConfirmation: true },
+    };
+  }
 
   const delivery = await notifyOwner(cancellation);
   if (!deliveryReachedOwner(delivery)) {
@@ -725,6 +772,17 @@ async function rescheduleAppointment(args = {}) {
     source: 'vapi-ai-receptionist',
     capturedAt: new Date().toISOString(),
   };
+
+  if (awaitingConfirmation(args)) {
+    // Read-back gate: validated the new slot, but neither notify NOR hold until the caller confirms.
+    // (Deferring the hold is what fixes the incident — the premature hold blocked the caller's own re-book.)
+    return {
+      ok: true,
+      needsConfirmation: true,
+      message: `Just to confirm: move your ${reschedule.service || 'appointment'}${reschedule.stylist ? ` with ${reschedule.stylist}` : ''} to ${newWhen}, callback ${speakPhone(reschedule.customer.phone)}. Should I send that to the salon?`,
+      data: { reschedule, pendingConfirmation: true },
+    };
+  }
 
   const delivery = await notifyOwner(reschedule);
   if (newHold) {

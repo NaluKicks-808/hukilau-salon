@@ -522,6 +522,30 @@ async function runLive() {
     ok(/marketing/.test(r.data.ownerMessage) && /For: Trish/.test(r.data.ownerMessage), 'the owner message carries the text + recipient');
   }
 
+  section('confirmation gate — no owner notification (or hold) until confirmed:true');
+  {
+    // Use reschedule WITHOUT a service so there's no network slot-check — a pure capture path.
+    const base = { firstName: 'Test', phone: '8085551234', newDate: 'July 15', newTime: '2 PM' };
+
+    // Flag OFF (default) → commits immediately, exactly like today. Ships safe.
+    delete process.env.REQUIRE_CONFIRMATION;
+    const off = await tools.rescheduleAppointment({ ...base });
+    ok(off.ok && !off.needsConfirmation && off.data.delivery, 'flag OFF: reschedule commits immediately (backward compatible)');
+
+    // Flag ON → first call validates + reads back, sends NOTHING to the salon.
+    process.env.REQUIRE_CONFIRMATION = 'true';
+    const pending = await tools.rescheduleAppointment({ ...base });
+    ok(pending.needsConfirmation === true && !pending.data.delivery, 'flag ON: no confirmed:true -> NO owner notification, asks to confirm');
+    ok(/808-555-1234/.test(pending.message), 'the confirmation reads the callback number back in grouped digits');
+    ok(/should i send/i.test(pending.message), 'the confirmation explicitly asks before sending');
+
+    // Flag ON + confirmed:true → commits.
+    const committed = await tools.rescheduleAppointment({ ...base, confirmed: true });
+    ok(committed.ok && !committed.needsConfirmation && committed.data.delivery, 'flag ON + confirmed:true -> commits + notifies exactly once');
+
+    delete process.env.REQUIRE_CONFIRMATION; // restore default for the rest of the suite
+  }
+
   await runLiveLookup();
 
   section('LIVE: availability across stylists');
