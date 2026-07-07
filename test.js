@@ -351,6 +351,20 @@ function runUnit() {
     }
   }
 
+  section('take_message — real message relay (fixes the hallucinated "I\'ll pass it along")');
+  {
+    const { formatOwnerMessage } = require('./src/notify');
+    const m = formatOwnerMessage({
+      action: 'message',
+      customer: { firstName: 'Caleb', phone: '8085551234' },
+      forWho: 'Trish',
+      note: 'Sent an email about marketing services we discussed last week.',
+    });
+    ok(/Message for the salon/i.test(m), 'message owner-note has its own header (not "booking")');
+    ok(/For: Trish/.test(m) && /Caleb/.test(m) && /marketing services/.test(m), 'message note carries recipient, caller, and text');
+    ok(/follow up/i.test(m), 'message note tells the owner to follow up');
+  }
+
   section('lookup_appointment — find caller\'s appointment by phone (privacy-guarded)');
   {
     const { summarizeAppointment, buildLookupResult } = require('./hukilau-booking');
@@ -485,6 +499,20 @@ async function findAvailableDate(service) {
 
 async function runLive() {
   const service = "women's cut & style";
+
+  section('take_message capture (no channels configured -> vapi-return, honest confirm)');
+  {
+    const empty = await tools.takeMessage({});
+    ok(empty.ok === false && empty.error === 'missing_fields', 'take_message asks for the text when none is given');
+    const r = await tools.takeMessage({
+      firstName: 'Caleb',
+      forWho: 'Trish',
+      message: 'I emailed about marketing services we discussed last week.',
+    });
+    ok(r.ok && r.data.message.action === 'message', 'take_message captures a message request');
+    ok(/passed your message along|noted your message/i.test(r.message), 'confirmation is returned only from the capture path (no hallucinated relay)');
+    ok(/marketing/.test(r.data.ownerMessage) && /For: Trish/.test(r.data.ownerMessage), 'the owner message carries the text + recipient');
+  }
 
   await runLiveLookup();
 

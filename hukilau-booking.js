@@ -1057,6 +1057,47 @@ async function lookupAppointment(args = {}) {
   return buildLookupResult(phone10, appts, svcByPos, empByPos, LOOKUP_TZ);
 }
 
+// ---------- Tool: take_message (relay a general message to the salon; NOT tied to an appointment) ----------
+// Fixes a trust bug: with no message tool, the assistant would PROMISE to pass a message along and
+// then drop it — nothing was captured, the caller hung up believing it was delivered. This gives the
+// promise a real destination (the owner's channels), and the success line is returned ONLY after
+// delivery is confirmed, so the assistant can't claim a relay that didn't happen.
+async function takeMessage(args = {}) {
+  const message = args.message ? String(args.message).trim() : '';
+  if (!message) {
+    return {
+      ok: false,
+      error: 'missing_fields',
+      message: 'Of course — what message would you like to leave for the salon?',
+      data: { missing: ['message'] },
+    };
+  }
+  const msgRequest = {
+    action: 'message',
+    status: 'pending_owner_action',
+    customer: customerFrom(args),
+    forWho: args.forWho || args.for || args.recipient || null,
+    note: message,
+    source: 'vapi-ai-receptionist',
+    capturedAt: new Date().toISOString(),
+  };
+  const delivery = await notifyOwner(msgRequest);
+  if (!deliveryReachedOwner(delivery)) {
+    console.error('OWNER NOTIFY FAILED', JSON.stringify(delivery));
+    return {
+      ok: true,
+      message:
+        "I've noted your message, but I'm having trouble reaching the salon's system this second — please try again shortly or contact the salon directly so it isn't missed.",
+      data: { message: msgRequest, delivery, ownerMessage: formatOwnerMessage(msgRequest) },
+    };
+  }
+  return {
+    ok: true,
+    message: "Got it — I've passed your message along to the salon and they'll follow up. Anything else?",
+    data: { message: msgRequest, delivery, ownerMessage: formatOwnerMessage(msgRequest) },
+  };
+}
+
 // parseClock and deliveryReachedOwner are exported for unit tests.
 module.exports = {
   checkAvailability,
@@ -1070,6 +1111,7 @@ module.exports = {
   lookupAppointment,
   summarizeAppointment,
   buildLookupResult,
+  takeMessage,
   parseClock,
   parseWeekdays,
   deliveryReachedOwner,

@@ -107,6 +107,15 @@ function formatOwnerMessage(b, opts = {}) {
       `📝 ${note}`,
       'Please add this note to the appointment in Salon Scheduler.',
     ];
+  } else if (action === 'message') {
+    header = 'Message for the salon:';
+    lines = [
+      b.forWho ? `For: ${b.forWho}` : null,
+      `👤 ${name}`,
+      `📞 ${b.customer.phone || '(no phone captured)'}`,
+      note ? `📝 ${note}` : '📝 (no message text)',
+      'Please follow up with the caller.',
+    ];
   } else {
     header = 'New booking request:';
     lines = [
@@ -183,7 +192,9 @@ async function sendPushover(b) {
         ? '🔁 Reschedule request'
         : action === 'note'
           ? '📝 Note for a booking'
-          : '📅 New booking request';
+          : action === 'message'
+            ? '📩 New message for the salon'
+            : '📅 New booking request';
   const emergency = isSameDayAppointment(b);
   const params = {
     token: PUSHOVER_TOKEN,
@@ -251,9 +262,18 @@ async function sendNotion(b) {
 function buildNotionProperties(b) {
   const action = b.action || 'book';
   const Action =
-    action === 'cancel' ? 'Cancel' : action === 'reschedule' ? 'Reschedule' : action === 'note' ? 'Note' : 'Book';
+    action === 'cancel'
+      ? 'Cancel'
+      : action === 'reschedule'
+        ? 'Reschedule'
+        : action === 'note'
+          ? 'Note'
+          : action === 'message'
+            ? 'Message'
+            : 'Book';
   const name = [b.customer.firstName, b.customer.lastName].filter(Boolean).join(' ') || b.customer.firstName || '(no name)';
   const noteParts = [];
+  if (b.forWho) noteParts.push(`For ${b.forWho}`);
   if (b.offMenu) noteParts.push('OFF-MENU — confirm service & price');
   if (b.fromWhen) noteParts.push(`From: ${b.fromWhen}`);
   if (b.reason) noteParts.push(`Reason: ${b.reason}`);
