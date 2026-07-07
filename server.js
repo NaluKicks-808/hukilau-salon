@@ -121,6 +121,13 @@ function extractCallerNumber(body) {
   return n ? String(n) : null;
 }
 
+// A 555-exchange number is fiction / directory-assistance — never a real customer. Weaker models
+// sometimes read back or pass the "808-555-1234" example from the prompt instead of the real caller.
+function looksFakePhone(p) {
+  const d = String(p == null ? '' : p).replace(/\D/g, '').slice(-10);
+  return d.length === 10 && d.slice(3, 6) === '555';
+}
+
 // Always return a plain SPEAKABLE STRING to Vapi. Some Vapi versions reject object results with
 // "No result returned", and owner delivery now happens out-of-band via SMS (Telnyx) — so Vapi
 // only needs the line for the assistant to say.
@@ -155,10 +162,12 @@ async function handleToolRequest(req, res, defaultTool) {
   for (const call of calls) {
     const toolName = call.name || defaultTool;
     const fn = TOOLS[toolName];
-    // Default the phone to the caller's own number when the model didn't supply one, so callbacks,
-    // messages, and appointment lookups always have a number even if the assistant forgets to pass it.
-    if (callerNumber && call.args && !(call.args.phone || call.args.customerPhone || call.args.number)) {
-      call.args.phone = callerNumber;
+    // Default the phone to the caller's own number when the model passed NONE, or passed an obviously
+    // FAKE one (a 555 number — e.g. the "808-555-1234" example some models copy). A caller giving a
+    // real different number still overrides. Keeps callbacks/lookups on the real caller ID.
+    if (callerNumber && call.args) {
+      const passed = call.args.phone || call.args.customerPhone || call.args.number;
+      if (!passed || looksFakePhone(passed)) call.args.phone = callerNumber;
     }
     try {
       if (!fn) throw new Error(`unknown tool: ${toolName}`);
@@ -410,4 +419,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, extractToolCalls, toResult, extractCallerNumber };
+module.exports = { app, extractToolCalls, toResult, extractCallerNumber, looksFakePhone };

@@ -360,6 +360,9 @@ function runUnit() {
     ok(extractCallerNumber({ message: { call: { customer: { number: '+18085551234' } } } }) === '+18085551234', 'pulls the caller number from message.call.customer.number');
     ok(extractCallerNumber({ message: { customer: { number: '+18085550000' } } }) === '+18085550000', 'falls back to message.customer.number');
     ok(extractCallerNumber({ message: { call: { id: 'abc' } } }) === null, 'returns null when the payload carries no caller number');
+    const { looksFakePhone } = require('./server');
+    ok(looksFakePhone('808-555-1234') === true && looksFakePhone('(808) 555-0000') === true, 'a 555 number is flagged as fake (models copy the prompt example)');
+    ok(looksFakePhone('808-751-0081') === false && looksFakePhone('801-404-0659') === false, 'real numbers are NOT flagged fake');
   }
 
   section('take_message — real message relay (fixes the hallucinated "I\'ll pass it along")');
