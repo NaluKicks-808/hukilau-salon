@@ -332,6 +332,39 @@ app.get('/ops/digest', async (req, res) => {
   res.json({ ok: true, delivered: sent.delivered, day: dayIso });
 });
 
+// Preview any owner notification on the OPERATOR's phone (PUSHOVER_DEV_USER) WITHOUT alerting the
+// salon group — so you can see exactly what a booking/cancel/reschedule/note/message alert looks
+// like. Sample data only. GET /ops/preview?action=cancel|reschedule|book|note|message
+const PREVIEW_TITLES = {
+  book: '📅 New booking request',
+  cancel: '❌ Cancellation request',
+  reschedule: '🔁 Reschedule request',
+  note: '📝 Note for a booking',
+  message: '📩 New message for the salon',
+};
+function sampleNotification(action) {
+  const customer = { firstName: 'Sample', lastName: 'Preview', phone: '8085550123' };
+  if (action === 'cancel')
+    return { action: 'cancel', customer, service: "Men's Haircut", stylist: 'Patricia', when: 'Thursday, July 10 at 3:00 PM', reason: 'Preview only — no action needed.' };
+  if (action === 'reschedule')
+    return { action: 'reschedule', customer, service: "Women's Cut", stylist: 'Amanda', fromWhen: 'Monday, July 7 at 10:00 AM', when: 'Friday, July 11 at 1:00 PM', note: 'Preview only — no action needed.' };
+  if (action === 'note')
+    return { action: 'note', customer, service: "Women's Cut", stylist: 'Amanda', when: 'Tuesday, July 14 at 2:00 PM', note: 'Please use the quiet room. (Preview only — no action needed.)' };
+  if (action === 'message')
+    return { action: 'message', customer, forWho: 'Trish', note: 'Please call me back about my color. (Preview only — no action needed.)' };
+  return { action: 'book', customer, service: "Women's Cut & Style", stylist: 'Amanda', when: 'Tuesday, July 14 at 2:00 PM', note: 'Preview only — no action needed.' };
+}
+app.get('/ops/preview', async (req, res) => {
+  if (!opsKeyOk(req)) return res.status(401).json({ error: 'unauthorized — append ?key=YOUR_OPS_KEY' });
+  const { formatOwnerMessage } = require('./src/notify');
+  const action = String(req.query.action || 'book').toLowerCase();
+  const sample = sampleNotification(action);
+  const title = `[DEMO] ${PREVIEW_TITLES[action] || PREVIEW_TITLES.book}`;
+  const body = formatOwnerMessage(sample, { header: false });
+  const sent = await alertOps(title, body, { level: 'normal' });
+  res.json({ ok: true, action, sentToOperatorPhone: sent.delivered, detail: sent.detail, title, body });
+});
+
 app.get('/', (req, res) => res.json({ ok: true, service: 'hukilau-receptionist' }));
 app.get('/health', (req, res) => {
   // Don't enumerate the notify channels here (e.g. "notion+pushover+telnyx") — that's recon for
