@@ -373,6 +373,9 @@ function runUnit() {
     const { looksFakePhone } = require('./server');
     ok(looksFakePhone('808-555-1234') === true && looksFakePhone('(808) 555-0000') === true, 'a 555 number is flagged as fake (models copy the prompt example)');
     ok(looksFakePhone('808-751-0081') === false && looksFakePhone('801-404-0659') === false, 'real numbers are NOT flagged fake');
+    ok(looksFakePhone('XXX-XXX-XXXX') === true, 'a no-digit placeholder is flagged fake (live incident 2026-07-10: Jessica Blue cancellation)');
+    ok(looksFakePhone('840-9797') === true && looksFakePhone('n/a') === true, 'under-10-digit junk is flagged fake so caller ID takes over');
+    ok(looksFakePhone('+1 808-840-9797') === false, 'a full number with country code still passes');
   }
 
   section('take_message — real message relay (fixes the hallucinated "I\'ll pass it along")');

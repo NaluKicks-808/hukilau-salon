@@ -123,9 +123,12 @@ function extractCallerNumber(body) {
 
 // A 555-exchange number is fiction / directory-assistance — never a real customer. Weaker models
 // sometimes read back or pass the "808-555-1234" example from the prompt instead of the real caller.
+// Anything with fewer than 10 digits is equally undialable — "XXX-XXX-XXXX" (live incident
+// 2026-07-10: a cancellation reached the salon with a literal X placeholder), "N/A", truncated
+// numbers — so treat those as fake too and let the caller-ID default take over.
 function looksFakePhone(p) {
   const d = String(p == null ? '' : p).replace(/\D/g, '').slice(-10);
-  return d.length === 10 && d.slice(3, 6) === '555';
+  return d.length < 10 || d.slice(3, 6) === '555';
 }
 
 // Always return a plain SPEAKABLE STRING to Vapi. Some Vapi versions reject object results with
@@ -163,8 +166,9 @@ async function handleToolRequest(req, res, defaultTool) {
     const toolName = call.name || defaultTool;
     const fn = TOOLS[toolName];
     // Default the phone to the caller's own number when the model passed NONE, or passed an obviously
-    // FAKE one (a 555 number — e.g. the "808-555-1234" example some models copy). A caller giving a
-    // real different number still overrides. Keeps callbacks/lookups on the real caller ID.
+    // FAKE/INVALID one — a 555 number ("808-555-1234" prompt example) or under 10 digits
+    // ("XXX-XXX-XXXX"). A caller giving a real different number still overrides. Keeps
+    // callbacks/lookups on the real caller ID.
     if (callerNumber && call.args) {
       const passed = call.args.phone || call.args.customerPhone || call.args.number;
       if (!passed || looksFakePhone(passed)) call.args.phone = callerNumber;
