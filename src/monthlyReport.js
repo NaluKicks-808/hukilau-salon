@@ -270,10 +270,32 @@ async function createReportPage(stats, fileUploadId) {
     type: 'bulleted_list_item',
     bulleted_list_item: { rich_text: [{ text: { content: `${label}: ` }, annotations: { bold: true } }, { text: { content: String(value) } }] },
   });
-  return notionFetch('pages', {
-    parent: { page_id: REPORTS_PAGE_ID() },
-    properties: { title: { title: rt(title) } },
-    children: [
+  const children = reportChildren(stats, fileUploadId, line);
+  try {
+    return await notionFetch('pages', {
+      parent: { page_id: REPORTS_PAGE_ID() },
+      properties: { title: { title: rt(title) } },
+      children,
+    });
+  } catch (err) {
+    // The 📊 Monthly Reports page lives under the client brief; if it hasn't been shared with
+    // this integration yet, NEVER fail silently on the unattended cron — file the report into
+    // the Call Log DB (always writable) flagged for a one-drag move.
+    if (!/404/.test(String(err.message))) throw err;
+    return notionFetch('pages', {
+      parent: { database_id: process.env.NOTION_CALLS_DB_ID },
+      properties: {
+        Name: { title: rt(`📊 ${title} (needs move → 📊 Monthly Reports)`) },
+        Client: { select: { name: process.env.CLIENT_NAME || 'Hukilau Salon' } },
+        When: { date: { start: new Date().toISOString() } },
+      },
+      children,
+    });
+  }
+}
+
+function reportChildren(stats, fileUploadId, line) {
+  return [
       { object: 'block', type: 'pdf', pdf: { type: 'file_upload', file_upload: { id: fileUploadId } } },
       { object: 'block', type: 'divider', divider: {} },
       { object: 'block', type: 'heading_3', heading_3: { rich_text: rt('The numbers') } },
@@ -286,8 +308,7 @@ async function createReportPage(stats, fileUploadId) {
       line('Busiest day', stats.busiestDay),
       line('Average call', fmtDur(stats.avgSeconds)),
       { object: 'block', type: 'paragraph', paragraph: { rich_text: rt('Generated automatically from the Call Log + Booking Requests archives.') } },
-    ],
-  });
+  ];
 }
 
 // ---------------------------------------------------------------- entry point
