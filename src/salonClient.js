@@ -109,16 +109,62 @@ async function fetchPageHtml() {
 async function getSalonData({ force = false } = {}) {
   if (!force && cache && Date.now() - cache.fetchedAt < TTL_MS) return cache.data;
   let html;
+  let fromSnapshot = false;
   try {
     html = await fetchPageHtml();
   } catch (err) {
     if (fs.existsSync(SNAPSHOT)) {
       html = fs.readFileSync(SNAPSHOT, 'utf8');
+      fromSnapshot = true;
     } else {
       throw err;
     }
   }
-  const data = extractPageData(html);
+  let data;
+  try {
+    data = extractPageData(html);
+  } catch (err) {
+    // 2026-07 longevity audit #1: a REDESIGNED page fetches fine (HTTP 200) but fails extraction —
+    // that used to hard-down every booking tool with no fallback. Now we limp on the vendored
+    // snapshot (last-known-good config) and page the operator, instead of failing every call.
+    if (!fromSnapshot && fs.existsSync(SNAPSHOT)) {
+      console.error(JSON.stringify({ evt: 'salon_extract_fallback', error: String(err.message).slice(0, 200) }));
+      try {
+        const { alertOps } = require('./opsAlert');
+        const { onceOnly } = require('./opsLog');
+        if (await onceOnly('ops:extract-fallback', 6 * 3600)) {
+          await alertOps(
+            '⚠️ Hukilau: salon page structure changed',
+            'Live booking page fetched OK but data extraction FAILED — running on the vendored snapshot (stale config). Re-snapshot vendor/page.snapshot.html and review the extractor soon.',
+            { level: 'high' }
+          );
+        }
+      } catch (_) {
+        /* alerting must never break the fallback itself */
+      }
+      data = extractPageData(fs.readFileSync(SNAPSHOT, 'utf8'));
+    } else {
+      throw err;
+    }
+  }
+  // Longevity audit #2: the stylist roster is hardcoded by index elsewhere — a staff change at the
+  // salon used to be COMPLETELY silent. Alert once a day when the live count drifts from expected.
+  const expected = Number(process.env.EXPECTED_STYLISTS) || 4;
+  if (Array.isArray(data.employeeJSON) && data.employeeJSON.length !== expected) {
+    try {
+      const { alertOps } = require('./opsAlert');
+      const { onceOnly } = require('./opsLog');
+      if (await onceOnly(`ops:roster:${data.employeeJSON.length}`, 24 * 3600)) {
+        await alertOps(
+          '⚠️ Hukilau: stylist roster changed',
+          `The salon's site now lists ${data.employeeJSON.length} stylists (expected ${expected}). The index→name map in src/stylists.js may be wrong — verify before bookings go to the wrong stylist. Run: npm run audit`,
+          { level: 'high' }
+        );
+      }
+    } catch (_) {
+      /* best-effort */
+    }
+  }
   cache = { fetchedAt: Date.now(), data };
   return data;
 }

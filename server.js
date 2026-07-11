@@ -389,6 +389,13 @@ app.get('/ops/monthly-report', async (req, res) => {
     res.json({ ok: true, month, stats: out.stats, page: out.pageUrl });
   } catch (err) {
     console.error(JSON.stringify({ evt: 'monthly_report_error', month, error: String(err.message || err).slice(0, 300) }));
+    // Longevity audit #5: this was the only failure path with NO operator alert — the client
+    // retention report could silently never appear. Now it pages Evan like everything else.
+    try {
+      await alertOps('⚠️ Hukilau monthly report FAILED', `Month ${month}: ${String(err.message || err).slice(0, 300)}\nRe-run: /ops/monthly-report?month=${month}`, { level: 'high' });
+    } catch (_) {
+      /* alerting must never mask the 500 */
+    }
     res.status(500).json({ error: String(err.message || err).slice(0, 300) });
   }
 });
