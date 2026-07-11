@@ -482,6 +482,7 @@ function runUnit() {
       endedAt: '2026-07-03T22:00:13.000Z',
       cost: 0.0421,
       call: { id: 'call_abc' },
+      recordingUrl: 'https://storage.vapi.ai/call_abc-mono.wav',
       analysis: { successEvaluation: 'false', summary: 'Caller went silent after the greeting.' },
       artifact: { transcript: 'AI: Aloha!\nUser: hi\n' + 'x'.repeat(4000) },
     };
@@ -491,12 +492,17 @@ function runUnit() {
     ok(meta.properties['Ended Reason'].select.name === 'silence-timed-out', 'ended reason maps to the select column');
     ok(meta.properties['Duration (s)'].number === 13 && meta.properties.Cost.number === 0.0421, 'duration + cost land as numbers');
     ok(meta.properties['Call ID'].rich_text[0].text.content === 'call_abc', 'call id is stored for cross-referencing Vapi');
+    ok(
+      meta.properties.Recording.url === 'https://api.vapi.ai/call/call_abc/mono-recording',
+      'Recording stores the AUTHENTICATED endpoint, never the public URL (those die 2026-07-25)'
+    );
     ok(meta.title.includes('13s') && meta.title.includes('🚩'), 'page title carries duration and the flag');
     const paras = meta.children.filter((b) => b.type === 'paragraph');
     ok(meta.children[0].type === 'heading_2' && paras.length >= 3, 'long transcript is chunked into multiple body blocks');
     ok(paras.every((b) => b.paragraph.rich_text[0].text.content.length <= 1900), 'every transcript chunk fits Notion 2000-char limit');
     const bare = buildCallMeta({ endedReason: 'customer-ended-call' });
     ok(bare.properties.Flagged.checkbox === false && /no transcript/.test(bare.children[1].paragraph.rich_text[0].text.content), 'clean call, no transcript -> unflagged page with a fallback note');
+    ok(bare.properties.Recording === undefined, 'no recording on the report -> no Recording property (no 404 links)');
     ok(chunkText('abcd', 2).length === 2, 'chunkText splits on the boundary');
     if (saved.k === undefined) delete process.env.NOTION_API_KEY; else process.env.NOTION_API_KEY = saved.k;
     if (saved.d === undefined) delete process.env.NOTION_CALLS_DB_ID; else process.env.NOTION_CALLS_DB_ID = saved.d;

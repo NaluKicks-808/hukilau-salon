@@ -10,6 +10,8 @@
  *   npm run calls -- --full          # full transcripts
  *   npm run calls -- --id <callId>   # one specific call, full detail
  *   npm run calls -- --assistant <assistantId>   # filter to one assistant
+ *   npm run calls -- --audio <callId>   # download the recording (mp3) via the
+ *                                       # authenticated endpoint (public URLs die 2026-07-25)
  *
  * Auth: VAPI_API_KEY from the environment. If unset, falls back to reading it
  * out of ../reception-hq/.env.local (same key the cost sync uses), so on
@@ -33,12 +35,13 @@ function resolveApiKey() {
 }
 
 function parseArgs(argv) {
-  const args = { limit: 5, full: false, id: null, assistant: null };
+  const args = { limit: 5, full: false, id: null, assistant: null, audio: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--limit') args.limit = Number(argv[++i]) || 5;
     else if (argv[i] === '--full') args.full = true;
     else if (argv[i] === '--id') args.id = argv[++i];
     else if (argv[i] === '--assistant') args.assistant = argv[++i];
+    else if (argv[i] === '--audio') args.audio = argv[++i];
   }
   return args;
 }
@@ -77,6 +80,23 @@ async function main() {
     process.exit(1);
   }
   const headers = { Authorization: `Bearer ${key}` };
+
+  if (args.audio) {
+    // Authenticated download (required from 2026-07-15). Vapi 302-redirects to a short-lived
+    // signed URL; fetch follows it automatically. Audio is MP3 despite any .wav naming upstream.
+    const res = await fetch(`${API}/call/${args.audio}/mono-recording`, { headers });
+    if (res.status === 404) {
+      console.error('No recording found — the call may be past Vapi\'s ~14-day retention, or the id is wrong.');
+      process.exit(1);
+    }
+    if (!res.ok) { console.error(`Vapi ${res.status}: ${await res.text()}`); process.exit(1); }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const out = path.join(process.cwd(), `call-${args.audio}.mp3`);
+    fs.writeFileSync(out, buf);
+    console.log(`Saved ${Math.round(buf.length / 1024)} KB → ${out}`);
+    console.log('Reminder: Vapi deletes its copy after retention — this local file is now the permanent one.');
+    return;
+  }
 
   if (args.id) {
     const res = await fetch(`${API}/call/${args.id}`, { headers });

@@ -73,10 +73,15 @@ function buildCallMeta(msg) {
   });
   const title = `${label}${seconds != null ? ` · ${seconds}s` : ''}${verdict.bad ? ' · 🚩' : ''}`;
 
-  const recording =
-    m.recordingUrl || m.stereoRecordingUrl || artifact.recordingUrl || artifact.stereoRecordingUrl || null;
+  // Vapi's public recording URLs stop working 2026-07-25 (auth-only downloads from 7/15), so
+  // storing recordingUrl would leave dead links. Store the authenticated endpoint instead —
+  // download with `npm run calls -- --audio <callId>` while the call is within Vapi retention.
+  const hasRecording = !!(
+    m.recordingUrl || m.stereoRecordingUrl || artifact.recordingUrl || artifact.stereoRecordingUrl
+  );
   const summary = analysis.summary || m.summary || '';
   const callId = callIdOf(m);
+  const recording = hasRecording && callId ? `https://api.vapi.ai/call/${callId}/mono-recording` : null;
 
   const properties = {
     Name: { title: rt(title) },
