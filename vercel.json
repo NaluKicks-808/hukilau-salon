@@ -5,5 +5,8 @@
   "functions": {
     "api/index.js": { "maxDuration": 30 }
   },
-  "crons": [{ "path": "/ops/digest", "schedule": "0 17 * * *" }]
+  "crons": [
+    { "path": "/ops/digest", "schedule": "0 17 * * *" },
+    { "path": "/ops/monthly-report", "schedule": "0 18 1 * *" }
+  ]
 }

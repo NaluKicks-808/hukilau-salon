@@ -507,6 +507,31 @@ function runUnit() {
     if (saved.k === undefined) delete process.env.NOTION_API_KEY; else process.env.NOTION_API_KEY = saved.k;
     if (saved.d === undefined) delete process.env.NOTION_CALLS_DB_ID; else process.env.NOTION_CALLS_DB_ID = saved.d;
   }
+
+  section('monthly report — month math + stats (unit)');
+  {
+    const { monthWindow, computeStats, previousMonthStr } = require('./src/monthlyReport');
+    const w = monthWindow('2026-07');
+    ok(w.start === '2026-07-01' && w.nextStart === '2026-08-01' && w.label === 'July 2026', 'monthWindow builds the window + label');
+    ok(monthWindow('2026-12').nextStart === '2027-01-01', 'December rolls to January');
+    ok(monthWindow('nope') === null && monthWindow('2026-13') === null, 'bad month strings are rejected');
+    ok(previousMonthStr(new Date('2026-08-01T18:30:00Z')) === '2026-07', 'cron firing Aug 1 reports July');
+    const calls = [
+      { when: '2026-07-06T22:53:00.000Z', seconds: 70 }, // 12:53 PM HST — business hours
+      { when: '2026-07-07T05:30:00.000Z', seconds: 120 }, // 7:30 PM HST — after hours
+      { when: '2026-07-07T03:00:00.000Z', seconds: 60 }, // 5:00 PM HST — after hours (>=17)
+      { when: null, seconds: 999 }, // no date -> ignored entirely
+    ];
+    const bookings = [
+      { action: 'Book' }, { action: 'Book' }, { action: 'Cancel' },
+      { action: 'Message' }, { action: 'Note' }, { action: 'Reschedule' },
+    ];
+    const s = computeStats(calls, bookings, 'July 2026');
+    ok(s.calls === 3 && s.minutes === 4, 'calls counted, dateless rows ignored, minutes rounded (250s -> 4m)');
+    ok(s.afterHours === 2, 'after-hours = before 9 AM or 5 PM+ salon time');
+    ok(s.bookings === 2 && s.cancels === 1 && s.reschedules === 1 && s.messages === 2, 'actions bucketed; Notes count as messages');
+    ok(s.avgSeconds === 83 && s.longestSeconds === 120, 'average + longest call computed');
+  }
 }
 
 // --------------------------------------------------------------------------- live (network)

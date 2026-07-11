@@ -368,6 +368,31 @@ app.get('/ops/digest', async (req, res) => {
   res.json({ ok: true, delivered: sent.delivered, day: dayIso });
 });
 
+// Monthly owner report — the retention surface. Vercel cron fires this on the 1st (8 AM HST) for
+// the month that just ended: reads the Call Log + Booking Requests archives, renders the branded
+// one-page PDF, and files it under the 📊 Monthly Reports page in the Hukilau client brief.
+// ?month=YYYY-MM overrides the month; ?dry=1 returns the stats JSON and writes nothing.
+// Same auth contract as the digest cron above.
+app.get('/ops/monthly-report', async (req, res) => {
+  const bearer = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  const cronOk = !!CRON_SECRET && (req.get('x-cron-secret') === CRON_SECRET || bearer === CRON_SECRET);
+  const open = !OPS_KEY && !CRON_SECRET;
+  if (!open && !cronOk && !opsKeyOk(req)) return res.status(401).json({ error: 'unauthorized' });
+
+  const report = require('./src/monthlyReport');
+  if (!report.isConfigured()) return res.status(503).json({ error: 'report not configured (needs NOTION_API_KEY + NOTION_CALLS_DB_ID + NOTION_DATABASE_ID)' });
+  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : report.previousMonthStr();
+  try {
+    if (req.query.dry) return res.json({ ok: true, month, stats: await report.dryRunStats(month) });
+    const out = await report.publishMonthlyReport(month);
+    console.log(JSON.stringify({ evt: 'monthly_report', month, page: out.pageUrl }));
+    res.json({ ok: true, month, stats: out.stats, page: out.pageUrl });
+  } catch (err) {
+    console.error(JSON.stringify({ evt: 'monthly_report_error', month, error: String(err.message || err).slice(0, 300) }));
+    res.status(500).json({ error: String(err.message || err).slice(0, 300) });
+  }
+});
+
 // Preview any owner notification on the OPERATOR's phone (PUSHOVER_DEV_USER) WITHOUT alerting the
 // salon group — so you can see exactly what a booking/cancel/reschedule/note/message alert looks
 // like. Sample data only. GET /ops/preview?action=cancel|reschedule|book|note|message
