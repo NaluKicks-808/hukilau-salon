@@ -11,6 +11,17 @@ rescheduling, price quotes, service-name resolution, and post-booking notes.
 - **Client:** Hukilau Salon, Polynesian Cultural Center / Hukilau Marketplace, Lā‘ie.
   Stylists: Marcus, Kelli, Patricia, Amanda. Timezone: Pacific/Honolulu everywhere (no DST).
 
+## Change recipes (start here — edit exactly this file, nothing else)
+| To do this… | Edit exactly | Notes |
+|---|---|---|
+| Change a tool's behavior (availability, booking, cancel, notes, quotes) | `hukilau-booking.js` | every tool function lives here |
+| Fix service-name matching / add an alias | `src/services.js` | exact → alias → token-overlap scoring |
+| Change owner alerts (who / when) | `src/notify.js` | Notion + Pushover + Telnyx, each auto-on when its env vars are set |
+| Add a new Vapi tool | add to the `TOOLS` map in `server.js` **and** implement it in `hukilau-booking.js` | result must be a plain speakable string |
+| Change availability math | don't hand-edit — it's lifted verbatim into `vendor/availability-core.js` for parity with the salon's own site | |
+| Run tests | `node test.js` | 241 asserts, live read-only against the real calendar |
+| Check it's healthy | `GET /health` or `GET /ops` | operator status page |
+
 ## Non-negotiables (do not break these)
 
 1. **Capture-only.** We NEVER write to the salon's booking system (Salon Scheduler / AppHeaven).
