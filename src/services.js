@@ -37,6 +37,14 @@ const ALIASES = {
   'kids cut': "Kid's Haircut",
   'kids haircut and style': "Kid's Haircut & Style",
   'missionary haircut': 'Missionary Cut',
+  // "Buzz cut"/"buzz" wasn't mapped, so it token-scored into the "cut" family and led the
+  // did-you-mean with the niche "Missionary Cut" — Men's/Kid's Haircut tokenize to "haircut", not
+  // "cut", so they scored 0 and dropped off. Caller went silent and the call dead-ended
+  // (live 2026-07-11). A buzz cut is the classic men's clipper cut; the owner confirms by text
+  // anyway, so pin it to Men's Haircut instead of asking to clarify.
+  'buzz cut': "Men's Haircut",
+  buzzcut: "Men's Haircut",
+  buzz: "Men's Haircut",
   blowout: 'Regular Blowout',
   'regular blowout': 'Regular Blowout',
   'blow out': 'Regular Blowout',
@@ -63,6 +71,9 @@ const ALIASES = {
   'half highlights': 'Half Head Highlights',
   'brow lamination': 'Brow Lamination',
   brows: 'Brows',
+  // STT drift of "brows" — heard as "browse" and taken as an off-menu special request, sending a
+  // junk "Browse" booking to the salon (live 2026-07-08). Pin it back to the real Brows service.
+  browse: 'Brows',
   eyebrows: 'Brows',
   'brow wax': 'Brows',
   'eyebrow wax': 'Brows',
