@@ -12,7 +12,8 @@
     "test": "TZ=Pacific/Honolulu node test.js",
     "inspect": "TZ=Pacific/Honolulu node scripts/inspect.js",
     "audit": "TZ=Pacific/Honolulu node scripts/audit.js",
-    "calls": "TZ=Pacific/Honolulu node scripts/fetch-calls.js"
+    "calls": "TZ=Pacific/Honolulu node scripts/fetch-calls.js",
+    "troubleshoot": "TZ=Pacific/Honolulu node scripts/troubleshoot-call.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3",
