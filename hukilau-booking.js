@@ -573,7 +573,9 @@ function describeWhen(dateInput, timeInput) {
 }
 
 async function cancelAppointment(args = {}) {
-  const required = ['firstName', 'phone', 'date'];
+  // firstName is intentionally NOT required — we source the real name from the salon's own record
+  // (see realCallerName below), so the model can't force a "First Last" placeholder into the field.
+  const required = ['phone', 'date'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
   if (missing.length) {
     return {
@@ -607,6 +609,18 @@ async function cancelAppointment(args = {}) {
       message: `Just to confirm: cancel your ${cancellation.service || 'appointment'}${cancellation.when ? ' on ' + cancellation.when : ''}, callback ${speakPhone(cancellation.customer.phone)}. Should I send that cancellation to the salon?`,
       data: { cancellation, pendingConfirmation: true },
     };
+  }
+
+  // Source the caller's real name from the salon's own appointment record (matched by phone), so
+  // the salon sees who's cancelling — not a model-supplied "First Last". Strip that exact
+  // placeholder if we can't match, so the salon gets a blank name (+ phone/date) rather than junk.
+  const realName = await realCallerName(cancellation.customer.phone);
+  if (realName && realName.firstName) {
+    cancellation.customer.firstName = realName.firstName;
+    cancellation.customer.lastName = realName.lastName;
+  } else if (/^first$/i.test(cancellation.customer.firstName) && /^last$/i.test(cancellation.customer.lastName)) {
+    cancellation.customer.firstName = '';
+    cancellation.customer.lastName = '';
   }
 
   const delivery = await notifyOwner(cancellation);
@@ -671,7 +685,9 @@ async function addAppointmentNote(args = {}) {
 }
 
 async function rescheduleAppointment(args = {}) {
-  const required = ['firstName', 'phone', 'newDate', 'newTime'];
+  // firstName is intentionally NOT required — the real name comes from the salon's own record
+  // (realCallerName), so the model can't inject a "First Last" placeholder.
+  const required = ['phone', 'newDate', 'newTime'];
   const missing = required.filter((f) => !args[f] || !String(args[f]).trim());
   if (missing.length) {
     return {
@@ -782,6 +798,17 @@ async function rescheduleAppointment(args = {}) {
       message: `Just to confirm: move your ${reschedule.service || 'appointment'}${reschedule.stylist ? ` with ${reschedule.stylist}` : ''} to ${newWhen}, callback ${speakPhone(reschedule.customer.phone)}. Should I send that to the salon?`,
       data: { reschedule, pendingConfirmation: true },
     };
+  }
+
+  // Real name from the salon's own record (matched by phone) — so the notification AND the slot
+  // hold's meta show who it is, not a model-supplied "First Last" placeholder.
+  const realName = await realCallerName(reschedule.customer.phone);
+  if (realName && realName.firstName) {
+    reschedule.customer.firstName = realName.firstName;
+    reschedule.customer.lastName = realName.lastName;
+  } else if (/^first$/i.test(reschedule.customer.firstName) && /^last$/i.test(reschedule.customer.lastName)) {
+    reschedule.customer.firstName = '';
+    reschedule.customer.lastName = '';
   }
 
   const delivery = await notifyOwner(reschedule);
@@ -1020,6 +1047,29 @@ const LOOKUP_TZ = process.env.SALON_TZ || 'Pacific/Honolulu';
 const LOOKUP_WINDOW_DAYS = 90; // forward window — reschedule/cancel always target a FUTURE appointment
 
 const last10 = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(-10);
+
+// Pull the caller's REAL name from the salon's own appointment record, matched by phone — so
+// cancel/reschedule notifications name who it actually is, instead of a model-supplied value
+// (which has reached the salon as a literal "First Last" placeholder). Returns { firstName,
+// lastName } or null. Best-effort and read-only; same feed/window as lookup_appointment, so on a
+// live call the appts fetch is already warm in cache.
+async function realCallerName(phone) {
+  const phone10 = last10(phone);
+  if (phone10.length < 10) return null;
+  let appts;
+  try {
+    const startMs = moment.tz(LOOKUP_TZ).startOf('day').valueOf();
+    appts = await getBookedAppointments(startMs, LOOKUP_WINDOW_DAYS);
+  } catch (_) {
+    return null; // fall back to whatever the caller/model supplied
+  }
+  const match = (appts || []).find(
+    (a) => last10(a.customerPhone) === phone10 && a.customerName && String(a.customerName).trim()
+  );
+  if (!match) return null;
+  const parts = String(match.customerName).trim().split(/\s+/);
+  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') };
+}
 
 // Turn a raw getappt.php record into a caller-facing summary. Deliberately carries NO customer name
 // or phone (privacy) — only service, stylist, and time, which is all the caller needs to recognize
